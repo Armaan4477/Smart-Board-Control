@@ -11,6 +11,8 @@
 #include <TimeLib.h>
 #include <SPIFFS.h>
 #include <ESP_Mail_Client.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
 
 struct Schedule {
   int id;
@@ -102,6 +104,15 @@ const unsigned long BLINK_INTERVAL = 1000;
 bool blinkState = false;
 const char* authUsername = "admin";
 const char* authPassword = "12345678";
+
+#define ONE_WIRE_BUS 26
+OneWire oneWire(ONE_WIRE_BUS);
+DallasTemperature sensors(&oneWire);
+DeviceAddress tempDeviceAddress;
+DeviceAddress sensorAddress = {0x28, 0x59, 0x71, 0x80, 0xE3, 0xE1, 0x3C, 0x50};
+unsigned long lastTemp = 0;
+float currentTemp = 0;
+float lastValidTemperature = 0.0;
 
 const unsigned char favicon_png[] PROGMEM = {
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
@@ -666,6 +677,10 @@ WebServer server(80);
 
 WebSocketsServer webSocket = WebSocketsServer(81);
 
+const int MAX_TEMP_FAILURES = 3;
+int consecutiveTempFailures = 0;
+bool hasTempError = false;
+
 void handleGetLogs() {
   if (!spiffsInitialized) {
     server.send(500, "application/json", "{\"error\":\"SPIFFS not initialized!\"}");
@@ -776,12 +791,16 @@ void setup() {
   pinMode(switch1Pin, INPUT_PULLUP);
   pinMode(switch2Pin, INPUT_PULLUP);
   pinMode(errorLEDPin, OUTPUT);
+  pinMode(ONE_WIRE_BUS, INPUT_PULLUP);
 
   digitalWrite(relay1, HIGH);
   digitalWrite(relay2, HIGH);
   digitalWrite(errorLEDPin, LOW);
 
-  //Serial.begin(115200);
+  // Serial.begin(115200);
+  // delay(2000);
+
+  sensors.begin();
 
   if (!SPIFFS.begin(true)) {
     storeLogEntry("Failed to mount FS");
@@ -852,6 +871,8 @@ void setup() {
 
   webSocket.begin();
   webSocket.onEvent(webSocketEvent);
+
+  handleTemperature();
 
   resetWatchdog();
   watchdogTicker.attach(1, checkWatchdog);
@@ -990,6 +1011,16 @@ const char mainPage[] PROGMEM = R"html(
             font-size: 1.5em;
             margin: 10px 0;
             text-align: center;
+        }
+        #temperature {
+            font-size: 1.8em;
+            margin: 15px 0;
+            text-align: center;
+            padding: 15px;
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            color: #4CAF50;
         }
         .container {
             padding: 20px;
@@ -1259,6 +1290,7 @@ const char mainPage[] PROGMEM = R"html(
         <div id="time">Loading time...</div>
         <div id="day">Loading day...</div>
         <div id="date">Loading date...</div>
+        <div id="temperature">Temperature: -- °C</div>
         <div class="buttons">
             <button class="button" onclick="toggleRelay(1)" id="btn1">WaveMaker</button>
             <button class="button" onclick="toggleRelay(2)" id="btn2">Light</button>
@@ -1360,6 +1392,10 @@ const char mainPage[] PROGMEM = R"html(
                 if (data.relay2 !== undefined) {
                     relayStates[2] = data.relay2;
                     updateButtonStyle(2);
+                }
+                if (data.temperature !== undefined) {
+                    document.getElementById('temperature').textContent = 
+                        `Temperature: ${data.temperature} °C`;
                 }
             } catch (e) {
                 console.error('WebSocket error:', e);
@@ -1749,6 +1785,7 @@ void loop() {
 
 void emailLoop(void* parameter) {
   for (;;) {
+    handleTemperature();
     if (WiFi.status() == WL_CONNECTED) {
       if (!startupemail) {
         delay(1500);
@@ -1955,7 +1992,9 @@ void deactivateRelay(int relayNum, bool manual) {
 }
 
 void broadcastRelayStates() {
-  String message = "{\"relay1\":" + String(relay1State || overrideRelay1) + ",\"relay2\":" + String(relay2State || overrideRelay2) + "}";
+  String message = "{\"relay1\":" + String(relay1State || overrideRelay1) + 
+                  ",\"relay2\":" + String(relay2State || overrideRelay2) + 
+                  ",\"temperature\":" + String(lastValidTemperature, 1) + "}";
   webSocket.broadcastTXT(message);
 }
 
@@ -2313,6 +2352,12 @@ void sendEmailWithLogs(const String& trigger) {
     return;
   }
 
+  sensors.requestTemperatures();
+  float currentTempC = sensors.getTempC(sensorAddress);
+  if (currentTempC != DEVICE_DISCONNECTED_C) {
+    lastValidTemperature = currentTempC;
+  }
+
   MailClient.networkReconnect(true);
   smtp.debug(0);
   smtp.setTCPTimeout(10000);
@@ -2334,6 +2379,7 @@ void sendEmailWithLogs(const String& trigger) {
   textMsg += "Event: " + trigger + "\n";
   textMsg += "Timestamp: " + timeClient.getFormattedTime() + "\n\n";
   textMsg += "System Status:\n";
+  textMsg += "Temperature: " + String(lastValidTemperature, 1) + " °C\n";
   textMsg += "Relay 1 (WaveMaker): " + String(relay1State ? "ON" : "OFF") + "\n";
   textMsg += "Relay 2 (Light): " + String(relay2State ? "ON" : "OFF") + "\n";
   textMsg += "Override 1: " + String(overrideRelay1 ? "Active" : "Inactive") + "\n";
@@ -2345,7 +2391,6 @@ void sendEmailWithLogs(const String& trigger) {
   message.text.charSet = "us-ascii";
   message.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
 
-  // Read logs file content
   File logsFile = SPIFFS.open("/logs.json", "r");
   if (!logsFile) {
     storeLogEntry("Failed to open logs file for email");
@@ -2383,4 +2428,31 @@ void sendEmailWithLogs(const String& trigger) {
   }
 
   smtp.closeSession();
+}
+
+void handleTemperature() {
+    if (millis() - lastTemp >= 5000) {
+        sensors.requestTemperatures();
+        float tempC = sensors.getTempC(sensorAddress);
+        
+        if(tempC != DEVICE_DISCONNECTED_C) {
+            currentTemp = tempC;
+            lastValidTemperature = tempC;
+            broadcastRelayStates();
+            consecutiveTempFailures = 0;
+            if (hasTempError) {
+                clearError();
+                hasTempError = false;
+            }
+        } else {
+            consecutiveTempFailures++;
+            if (consecutiveTempFailures >= MAX_TEMP_FAILURES) {
+                storeLogEntry("Error: Temperature sensor failed " + String(consecutiveTempFailures) + " times");
+                indicateError();
+                hasTempError = true;
+            }
+        }
+        
+        lastTemp = millis();
+    }
 }
