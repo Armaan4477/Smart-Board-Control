@@ -1,7 +1,6 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <WebSocketsServer.h>
-#include <NTPClient.h>
 #include <WiFiUdp.h>
 #include <vector>
 #include <ArduinoJson.h>
@@ -9,10 +8,41 @@
 #include <string>
 #include <Ticker.h>
 #include <TimeLib.h>
-#include <SPIFFS.h>
+#include <LittleFS.h>
 #include <ESP_Mail_Client.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
+#include <time.h>
+
+void handleRoot();
+void handleFavicon();
+void handleLogsPage();
+void handleRelay1();
+void handleRelay2();
+void handleRelay3();
+void handleTime();
+void handleGetSchedules();
+void handleAddSchedule();
+void handleDeleteSchedule();
+void handleUpdateSchedule();
+void handleRelayStatus();
+void handleClearError();
+void handleGetErrorStatus();
+void handleOneClickLight();
+void handleTemperature();
+void templaunch();
+void emailLoop(void*);
+void mainLoop(void*);
+void sendEmailWithLogs(const String&);
+void checkoverride1();
+void checkoverride2();
+void overrideLEDState();
+void checkSchedules();
+void checkScheduleslaunch();
+void activateRelay(int, bool);
+void deactivateRelay(int, bool);
+void toggleLightSequence();
+void broadcastRelayStates();
 
 struct Schedule {
   int id;
@@ -33,6 +63,7 @@ struct LogEntry {
 
 const int relay1 = 16;
 const int relay2 = 17;
+const int relay3 = 18;
 const int switch1Pin = 23;
 const int switch2Pin = 22;
 const int errorLEDPin = 21;
@@ -43,19 +74,20 @@ bool relay1State = false;
 bool relay2State = false;
 bool relay3State = false;
 bool relay4State = false;
+bool timeSyncErrorLogged = false;
+bool tempErrorLogged = false;
+bool triggerederror = false;
 
 const char* ssid = "Free Public Wi-Fi";
 const char* password = "2A0R0M4AAN";
 std::vector<LogEntry> logBuffer;
 bool spiffsInitialized = false;
 WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP, "pool.ntp.org");
 Ticker watchdogTicker;
 unsigned long lastLoopTime = 0;
 const unsigned long watchdogTimeout = 10000;
 unsigned long lastTimeUpdate = 0;
 const long timeUpdateInterval = 1000;
-unsigned long epochTime = 0;
 unsigned long lastNTPSync = 0;
 unsigned long lastScheduleCheck = 0;
 unsigned long lastSecond = 0;
@@ -88,12 +120,12 @@ const std::vector<String> allowedIPs = {
 };
 unsigned long lastSwitch1Debounce = 0;
 unsigned long lastSwitch2Debounce = 0;
-const unsigned long DEBOUNCE_DELAY = 500;
+const unsigned long DEBOUNCE_DELAY = 800;
 unsigned long switch1PressStartTime = 0;
 unsigned long switch2PressStartTime = 0;
 bool switch1LastState = false;
 bool switch2LastState = false;
-const unsigned long HOLD_DURATION = 1000;
+const unsigned long HOLD_DURATION = 1500;
 extern unsigned long switch1PressStartTime;
 extern unsigned long switch2PressStartTime;
 extern bool switch1LastState;
@@ -109,10 +141,12 @@ const char* authPassword = "12345678";
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
 DeviceAddress tempDeviceAddress;
-DeviceAddress sensorAddress = {0x28, 0x59, 0x71, 0x80, 0xE3, 0xE1, 0x3C, 0x50};
+DeviceAddress sensorAddress = { 0x28, 0x59, 0x71, 0x80, 0xE3, 0xE1, 0x3C, 0x50 };
 unsigned long lastTemp = 0;
 float currentTemp = 0;
 float lastValidTemperature = 0.0;
+
+WiFiEventId_t wifiConnectHandler;
 
 const unsigned char favicon_png[] PROGMEM = {
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
@@ -681,16 +715,22 @@ const int MAX_TEMP_FAILURES = 3;
 int consecutiveTempFailures = 0;
 bool hasTempError = false;
 
+const char* ntpServer = "pool.ntp.org";
+const long gmtOffset_sec = 19800;  // 5 hours 30 minutes offset for IST
+const int daylightOffset_sec = 0;  // 0 for no daylight saving time
+unsigned long lastNtpRetry = 0;
+const unsigned long NTP_RETRY_INTERVAL = 30000;
+
 void handleGetLogs() {
   if (!spiffsInitialized) {
-    server.send(500, "application/json", "{\"error\":\"SPIFFS not initialized!\"}");
+    server.send(500, "application/json", "{\"error\":\"LittleFS not initialized!\"}");
     return;
   }
 
   StaticJsonDocument<2352> doc;
   doc.clear();
 
-  File file = SPIFFS.open("/logs.json", "r");
+  File file = LittleFS.open("/logs.json", "r");
   if (!file) {
     server.send(404, "application/json", "{\"logs\":[]}");
     return;
@@ -709,29 +749,28 @@ void handleGetLogs() {
 }
 
 void storeLogEntry(const String& msg) {
-  //Serial.println(msg);
+  // Serial.println(msg);
   const int MAX_LOGS = 18;
   const int MAX_LOG_ID = 20;
 
   if (!spiffsInitialized) return;
 
-  unsigned long hours = ((epochTime % 86400L) / 3600);
-  unsigned long minutes = ((epochTime % 3600) / 60);
-  unsigned long seconds = (epochTime % 60);
-
-  int currentDay = day();
-  int currentMonth = month();
-  int currentYear = year();
-
-  char timeStr[20];
-  sprintf(timeStr, "%02d/%02d/%d %02lu:%02lu:%02lu",
-          currentDay, currentMonth, currentYear,
-          hours, minutes, seconds);
+  String timeStr;
+  struct tm timeinfo;
+  if (validTimeSync && getLocalTime(&timeinfo)) {
+    char buffer[20];
+    sprintf(buffer, "%02d/%02d/%d %02d:%02d:%02d",
+            timeinfo.tm_mday, timeinfo.tm_mon + 1, timeinfo.tm_year + 1900,
+            timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+    timeStr = String(buffer);
+  } else {
+    timeStr = "00/00/0000 00:00:00";
+  }
 
   StaticJsonDocument<2048> doc;
   doc.clear();
 
-  File file = SPIFFS.open("/logs.json", "r");
+  File file = LittleFS.open("/logs.json", "r");
   bool fileExists = file;
   if (fileExists) {
     DeserializationError error = deserializeJson(doc, file);
@@ -760,7 +799,7 @@ void storeLogEntry(const String& msg) {
   newLog["timestamp"] = timeStr;
   newLog["message"] = msg;
 
-  File outFile = SPIFFS.open("/logs.json", "w");
+  File outFile = LittleFS.open("/logs.json", "w");
   if (outFile) {
     serializeJson(doc, outFile);
     outFile.close();
@@ -785,9 +824,38 @@ bool validDateSync = false;
 TaskHandle_t networkTask;
 TaskHandle_t controlTask;
 
+void attemptTimeSync() {
+  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+
+  struct tm timeinfo;
+  if (getLocalTime(&timeinfo)) {
+    storeLogEntry("Time and Date sync successful");
+    validTimeSync = true;
+    validDateSync = true;
+    lastNTPSync = millis();
+    clearError();
+    timeSyncErrorLogged = false;
+
+    setTime(timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec,
+            timeinfo.tm_mday, timeinfo.tm_mon + 1, timeinfo.tm_year + 1900);
+  } else {
+    if (!timeSyncErrorLogged) {
+      storeLogEntry("Time sync failed.");
+      timeSyncErrorLogged = true;
+    }
+    indicateError();
+  }
+}
+
+void onWifiConnected(WiFiEvent_t event, WiFiEventInfo_t info) {
+  storeLogEntry("Connected to WiFi. IP: " + WiFi.localIP().toString());
+  attemptTimeSync();
+}
+
 void setup() {
   pinMode(relay1, OUTPUT);
   pinMode(relay2, OUTPUT);
+  pinMode(relay3, OUTPUT);
   pinMode(switch1Pin, INPUT_PULLUP);
   pinMode(switch2Pin, INPUT_PULLUP);
   pinMode(errorLEDPin, OUTPUT);
@@ -795,6 +863,7 @@ void setup() {
 
   digitalWrite(relay1, HIGH);
   digitalWrite(relay2, HIGH);
+  digitalWrite(relay3, HIGH);
   digitalWrite(errorLEDPin, LOW);
 
   // Serial.begin(115200);
@@ -802,11 +871,13 @@ void setup() {
 
   sensors.begin();
 
-  if (!SPIFFS.begin(true)) {
+  if (!LittleFS.begin(true)) {
     storeLogEntry("Failed to mount FS");
   } else {
     spiffsInitialized = true;
   }
+
+  wifiConnectHandler = WiFi.onEvent(onWifiConnected, ARDUINO_EVENT_WIFI_STA_CONNECTED);
 
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
@@ -829,33 +900,13 @@ void setup() {
     clearError();
   }
 
-  timeClient.begin();
-  timeClient.setTimeOffset(19800);
-
-  if (timeClient.update()) {
-    epochTime = timeClient.getEpochTime();
-    setTime(epochTime);
-
-    currentDay = day();
-    currentMonth = month();
-    currentyear = year();
-
-    lastNTPSync = millis();
-    validTimeSync = true;
-    validDateSync = true;
-    storeLogEntry("Time and Date sync successful");
-    clearError();
-  } else {
-    storeLogEntry("Time sync failed.");
-    indicateError();
-  }
-
   server.on("/", HTTP_GET, handleRoot);
   server.on("/favicon.png", HTTP_GET, handleFavicon);
   server.on("/logs", HTTP_GET, handleLogsPage);
   server.on("/logs/data", HTTP_GET, handleGetLogs);
   server.on("/relay/1", HTTP_ANY, handleRelay1);
   server.on("/relay/2", HTTP_ANY, handleRelay2);
+  server.on("/relay/3", HTTP_ANY, handleRelay3);
   server.on("/time", HTTP_GET, handleTime);
   server.on("/schedules", HTTP_GET, handleGetSchedules);
   server.on("/schedule/add", HTTP_POST, handleAddSchedule);
@@ -872,7 +923,7 @@ void setup() {
   webSocket.begin();
   webSocket.onEvent(webSocketEvent);
 
-  handleTemperature();
+  templaunch();
 
   resetWatchdog();
   watchdogTicker.attach(1, checkWatchdog);
@@ -897,8 +948,11 @@ void setup() {
 }
 
 void indicateError() {
-  storeLogEntry("Error triggered.");
-  digitalWrite(errorLEDPin, HIGH);
+  if (!triggerederror) {
+    storeLogEntry("Error triggered.");
+    digitalWrite(errorLEDPin, HIGH);
+    triggerederror = true;
+  }
   hasError = true;
 }
 
@@ -906,6 +960,9 @@ void clearError() {
   storeLogEntry("Error cleared.");
   digitalWrite(errorLEDPin, LOW);
   hasError = false;
+  triggerederror = false;
+  timeSyncErrorLogged = false;
+  tempErrorLogged = false;
 }
 
 void saveSchedulesToEEPROM() {
@@ -944,8 +1001,7 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length)
         IPAddress ip = webSocket.remoteIP(num);
         storeLogEntry("WebSocket " + String(num) + " Connected from " + ip.toString() + " url: " + String((char*)payload));
 
-
-        String message = "{\"relay1\":" + String(relay1State || overrideRelay1) + ",\"relay2\":" + String(relay2State || overrideRelay2) + "}";
+        String message = "{\"relay1\":" + String(relay1State || overrideRelay1) + ",\"relay2\":" + String(relay2State || overrideRelay2) + ",\"relay3\":" + String(relay3State || overrideRelay1) + ",\"temperature\":" + String(lastValidTemperature, 1) + "}";
         webSocket.sendTXT(num, message);
       }
       break;
@@ -984,219 +1040,402 @@ const char mainPage[] PROGMEM = R"html(
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Aquarium Control</title>
     <style>
+        :root {
+            --primary-color: #1976D2;
+            --primary-dark: #0D47A1;
+            --primary-light: #BBDEFB;
+            --accent-color: #03A9F4;
+            --success-color: #4CAF50;
+            --warning-color: #FFC107;
+            --error-color: #F44336;
+            --text-color: #333;
+            --text-light: #757575;
+            --background-color: #f5f7fa;
+            --card-color: #ffffff;
+            --border-radius: 8px;
+            --shadow: 0 2px 10px rgba(0,0,0,0.1);
+            --transition: all 0.3s ease;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
         body {
             margin: 0;
             padding: 0;
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: #f0f2f5;
-            color: #333;
+            background-color: var(--background-color);
+            color: var(--text-color);
+            line-height: 1.6;
         }
+
         header {
-            background-color: #4CAF50;
+            background: linear-gradient(135deg, var(--primary-color), var(--primary-dark));
             color: white;
-            padding: 15px;
+            padding: 20px;
             text-align: center;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            position: relative;
+            z-index: 10;
         }
-        #time {
-            font-size: 2em;
-            margin: 20px 0;
-            text-align: center;
+
+        header h1 {
+            margin: 0;
+            font-size: 2rem;
+            letter-spacing: 0.5px;
         }
-        #day {
-            font-size: 1.5em;
-            margin: 10px 0;
-            text-align: center;
-        }
-        #date {
-            font-size: 1.5em;
-            margin: 10px 0;
-            text-align: center;
-        }
-        #temperature {
-            font-size: 1.8em;
-            margin: 15px 0;
-            text-align: center;
-            padding: 15px;
-            background-color: white;
-            border-radius: 8px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-            color: #4CAF50;
-        }
+
         .container {
             padding: 20px;
-            max-width: 800px;
+            max-width: 1000px;
             margin: auto;
         }
-        .buttons {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 15px;
-            justify-content: center;
-            margin-bottom: 30px;
-        }
-        .button {
-            flex: 1 1 150px;
-            padding: 15px;
-            background-color: #008CBA;
-            color: white;
-            border: none;
-            border-radius: 8px;
-            font-size: 1em;
-            cursor: pointer;
-            transition: background-color 0.3s;
+
+        .time-container {
+            margin: 20px 0;
+            padding: 20px;
+            background-color: var(--card-color);
+            border-radius: var(--border-radius);
+            box-shadow: var(--shadow);
             text-align: center;
         }
-        .button.on {
-            background-color: #4CAF50;
+
+        #time {
+            font-size: 2.5rem;
+            font-weight: bold;
+            color: var(--primary-color);
+            margin: 10px 0;
+            transition: var(--transition);
         }
-        .button.off {
-            background-color: #f44336;
+
+        #day {
+            font-size: 1.5rem;
+            color: var(--text-light);
+            margin: 5px 0;
         }
-        .button:hover {
-            opacity: 0.9;
+
+        #date {
+            font-size: 1.5rem;
+            color: var(--text-light);
+            margin: 5px 0;
         }
-        .schedule-form, .log-section {
-            background-color: white;
+
+        #temperature {
+            font-size: 2rem;
+            margin: 20px 0;
+            text-align: center;
             padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-            margin-bottom: 20px;
+            background-color: var(--card-color);
+            border-radius: var(--border-radius);
+            box-shadow: var(--shadow);
+            color: var(--primary-color);
+            transition: var(--transition);
         }
+
+        .buttons {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 15px;
+            margin-bottom: 30px;
+        }
+
+        .button {
+            padding: 15px;
+            border: none;
+            border-radius: var(--border-radius);
+            font-size: 1.1rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: var(--transition);
+            text-align: center;
+            box-shadow: var(--shadow);
+            background-color: var(--primary-color);
+            color: white;
+        }
+
+        .button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+        }
+
+        .button:active {
+            transform: translateY(1px);
+        }
+
+        .button.on {
+            background-color: var(--success-color);
+        }
+
+        .button.off {
+            background-color: var(--error-color);
+        }
+
+        .card {
+            background-color: var(--card-color);
+            padding: 25px;
+            border-radius: var(--border-radius);
+            box-shadow: var(--shadow);
+            margin-bottom: 25px;
+            transition: var(--transition);
+        }
+
+        .card:hover {
+            box-shadow: 0 5px 15px rgba(0,0,0,0.15);
+        }
+
+        .card h3 {
+            color: var(--primary-color);
+            margin-bottom: 15px;
+            font-size: 1.5rem;
+            border-bottom: 2px solid var(--primary-light);
+            padding-bottom: 10px;
+        }
+
+        .schedule-form, .log-section {
+            background-color: var(--card-color);
+            padding: 25px;
+            border-radius: var(--border-radius);
+            box-shadow: var(--shadow);
+            margin-bottom: 25px;
+            transition: var(--transition);
+        }
+
+        .schedule-form:hover, .log-section:hover {
+            box-shadow: 0 5px 15px rgba(0,0,0,0.15);
+        }
+
         .schedule-form h3, .log-section h3 {
-            margin-top: 0;
+            color: var(--primary-color);
+            margin-bottom: 15px;
+            font-size: 1.5rem;
+            border-bottom: 2px solid var(--primary-light);
+            padding-bottom: 10px;
         }
+
         .schedule-form label {
             display: block;
-            margin-bottom: 5px;
-            font-weight: bold;
+            margin-bottom: 8px;
+            font-weight: 500;
+            color: var(--text-color);
         }
-        .schedule-form input, .schedule-form select, .schedule-form button {
+
+        .schedule-form input, .schedule-form select {
             width: 100%;
-            padding: 10px;
-            margin: 10px 0 20px 0;
-            border-radius: 4px;
-            border: 1px solid #ccc;
-            box-sizing: border-box;
-            font-size: 1em;
+            padding: 12px;
+            margin: 8px 0 20px 0;
+            border-radius: var(--border-radius);
+            border: 1px solid #ddd;
+            font-size: 1rem;
+            transition: var(--transition);
         }
+
+        .schedule-form input:focus, .schedule-form select:focus {
+            outline: none;
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 3px var(--primary-light);
+        }
+
         .schedule-form select {
             appearance: none;
             background-color: #fff;
+            background-image: url('data:image/svg+xml;utf8,<svg fill="%23333" height="24" viewBox="0 0 24 24" width="24" xmlns="http://www.w3.org/2000/svg"><path d="M7 10l5 5 5-5z"/><path d="M0 0h24v24H0z" fill="none"/></svg>');
             background-repeat: no-repeat;
             background-position: right 10px center;
-            background-size: 10px 7px;
             padding-right: 40px;
             cursor: pointer;
         }
-        .schedule-form select:focus {
-            outline: none;
-            border-color: #4CAF50;
+
+        .schedule-form button {
+            width: 100%;
+            padding: 12px;
+            background-color: var(--primary-color);
+            color: white;
+            border: none;
+            border-radius: var(--border-radius);
+            font-size: 1.1rem;
+            cursor: pointer;
+            transition: var(--transition);
+            margin-top: 10px;
         }
+
+        .schedule-form button:hover {
+            background-color: var(--primary-dark);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 10px rgba(0,0,0,0.15);
+        }
+
+        .schedule-form button:active {
+            transform: translateY(1px);
+        }
+
         .schedule-table {
             width: 100%;
-            border-collapse: collapse;
+            border-collapse: separate;
+            border-spacing: 0;
             margin-top: 20px;
-            overflow-x: auto;
+            overflow: hidden;
+            border-radius: var(--border-radius);
+            box-shadow: var(--shadow);
         }
+
         .schedule-table th, .schedule-table td {
-            padding: 12px;
-            border: 1px solid #ddd;
+            padding: 15px;
             text-align: center;
         }
+
         .schedule-table th {
-            background-color: #4CAF50;
+            background-color: var(--primary-color);
             color: white;
+            font-weight: 500;
         }
+
+        .schedule-table th:first-child {
+            border-top-left-radius: var(--border-radius);
+        }
+
+        .schedule-table th:last-child {
+            border-top-right-radius: var(--border-radius);
+        }
+
+        .schedule-table tr:last-child td:first-child {
+            border-bottom-left-radius: var(--border-radius);
+        }
+
+        .schedule-table tr:last-child td:last-child {
+            border-bottom-right-radius: var(--border-radius);
+        }
+
         .schedule-table tr:nth-child(even) {
             background-color: #f9f9f9;
         }
+
+        .schedule-table tr {
+            background-color: white;
+            transition: var(--transition);
+        }
+
         .schedule-table tr:hover {
             background-color: #f1f1f1;
         }
-        @media (max-width: 600px) {
-            .schedule-table {
-                display: block; /* Ensure the table behaves as a block element on mobile */
-                width: 100%;    /* Ensure the table takes full width */
-                overflow-x: auto; /* Allow horizontal scrolling within the table */
-            }
 
-            /* Optional: Apply box-sizing to include padding and border in width calculations */
-            .schedule-table th, .schedule-table td {
-                box-sizing: border-box;
-            }
+        .schedule-table td {
+            border-bottom: 1px solid #eee;
         }
+
         .action-button {
-            width: 100px;
-            padding: 8px 0;
+            min-width: 100px;
+            padding: 8px 12px;
             margin: 5px;
-            background-color: #008CBA;
-            color: white;
             border: none;
             border-radius: 4px;
             cursor: pointer;
-            font-size: 0.9em;
-            transition: background-color 0.3s;
-            box-sizing: border-box;
+            font-size: 0.9rem;
+            font-weight: 500;
+            transition: var(--transition);
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
         }
-        .action-button.activate {
-            background-color: #4CAF50;
-        }
-        .action-button.deactivate {
-            background-color: #f44336;
-        }
-        .action-button.delete {
-            background-color: #d32f2f;
-        }
+
         .action-button:hover {
-            opacity: 0.9;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.15);
         }
+
+        .action-button:active {
+            transform: translateY(1px);
+        }
+
+        .action-button.activate {
+            background-color: var(--success-color);
+            color: white;
+        }
+
+        .action-button.deactivate {
+            background-color: var(--warning-color);
+            color: #333;
+        }
+
+        .action-button.delete {
+            background-color: var(--error-color);
+            color: white;
+        }
+
         #errorSection {
             text-align: center;
             margin: 20px 0;
-            color: #fff;
-            background-color: #f44336;
-            padding: 15px;
-            border-radius: 8px;
-            display: none;
-        }
-        #clearErrorBtn {
-            padding: 10px 20px;
-            background-color: #d32f2f;
             color: white;
+            background-color: var(--error-color);
+            padding: 20px;
+            border-radius: var(--border-radius);
+            display: none;
+            animation: pulse 2s infinite;
+            box-shadow: 0 4px 10px rgba(244, 67, 54, 0.3);
+        }
+
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(244, 67, 54, 0.4); }
+            70% { box-shadow: 0 0 0 10px rgba(244, 67, 54, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(244, 67, 54, 0); }
+        }
+
+        #clearErrorBtn {
+            padding: 12px 24px;
+            background-color: white;
+            color: var(--error-color);
             border: none;
             border-radius: 4px;
             cursor: pointer;
-            font-size: 1em;
-            margin-top: 10px;
+            font-size: 1rem;
+            font-weight: 500;
+            margin-top: 15px;
+            transition: var(--transition);
         }
+
+        #clearErrorBtn:hover {
+            background-color: #f5f5f5;
+            transform: scale(1.05);
+        }
+
         #logSection {
             display: none;
         }
+
         pre {
-            background-color: #f4f4f4;
+            background-color: #f8f9fa;
             padding: 15px;
-            border-radius: 8px;
+            border-radius: var(--border-radius);
             max-height: 300px;
             overflow-y: auto;
+            font-family: 'Consolas', 'Monaco', monospace;
+            border: 1px solid #eee;
+            white-space: pre-wrap;
         }
+
         .error {
-            color: #f44336;
+            color: var(--error-color);
             display: none;
             margin-top: -15px;
-            margin-bottom: 8px;
-            font-size: 0.9em;
+            margin-bottom: 12px;
+            font-size: 0.9rem;
+            transition: var(--transition);
         }
+
         .error2 {
-            color: #f44336;
+            color: var(--error-color);
             display: none;
             margin-top: 2px;
-            margin-bottom: 8px;
-            font-size: 0.9em;
+            margin-bottom: 12px;
+            font-size: 0.9rem;
+            transition: var(--transition);
         }
+
         .ready {
-            background-color: #4CAF50;
+            background-color: var(--success-color);
             cursor: pointer;
         }
+
         #successDialog {
             display: none;
             position: fixed;
@@ -1204,96 +1443,159 @@ const char mainPage[] PROGMEM = R"html(
             left: 50%;
             top: 50%;
             transform: translate(-50%, -50%);
-            background-color: #4CAF50;
+            background-color: var(--success-color);
             color: white;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+            padding: 25px;
+            border-radius: var(--border-radius);
+            box-shadow: 0 5px 20px rgba(0,0,0,0.3);
             text-align: center;
+            min-width: 300px;
+            animation: fadeIn 0.3s ease-out;
         }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translate(-50%, -60%); }
+            to { opacity: 1; transform: translate(-50%, -50%); }
+        }
+
+        #successDialog p {
+            font-size: 1.2rem;
+            margin-bottom: 15px;
+        }
+
         #successDialog button {
             margin-top: 15px;
-            padding: 10px 20px;
-            background-color: #fff;
-            color: #4CAF50;
+            padding: 10px 25px;
+            background-color: white;
+            color: var(--success-color);
             border: none;
             border-radius: 4px;
             cursor: pointer;
-            font-size: 1em;
+            font-size: 1rem;
+            font-weight: 500;
+            transition: var(--transition);
         }
+
         #successDialog button:hover {
-            background-color: #f1f1f1;
+            background-color: #f5f5f5;
+            transform: scale(1.05);
         }
-        @media (max-width: 600px) {
-            .buttons {
-                flex-direction: column;
-            }
-            .button {
-                flex: 1 1 100%;
-            }
-            .action-button {
-                width: 100%;
-            }
+
+        .day-checkboxes {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-bottom: 20px;
         }
+
         .day-checkboxes label {
-            display: inline-block;
-            margin-right: 10px;
+            display: inline-flex;
+            align-items: center;
             position: relative;
-            padding-left: 25px;
+            padding-left: 30px;
             cursor: pointer;
-            font-size: 1em;
+            font-size: 1rem;
+            user-select: none;
+            margin-right: 15px;
+            margin-bottom: 5px;
         }
+
         .day-checkboxes input {
             position: absolute;
             opacity: 0;
             cursor: pointer;
+            height: 0;
+            width: 0;
         }
+
         .day-checkboxes .checkmark {
             position: absolute;
             top: 0;
             left: 0;
-            height: 18px;
-            width: 18px;
+            height: 20px;
+            width: 20px;
             background-color: #eee;
             border-radius: 4px;
+            transition: var(--transition);
         }
+
         .day-checkboxes label:hover input ~ .checkmark {
             background-color: #ccc;
         }
+
         .day-checkboxes input:checked ~ .checkmark {
-            background-color: #4CAF50;
+            background-color: var(--primary-color);
         }
+
         .day-checkboxes .checkmark:after {
             content: "";
             position: absolute;
             display: none;
-        }
-        .day-checkboxes input:checked ~ .checkmark:after {
-            display: block;
-        }
-        .day-checkboxes label .checkmark:after {
-            left: 6px;
-            top: 2px;
+            left: 7px;
+            top: 3px;
             width: 5px;
             height: 10px;
             border: solid white;
-            border-width: 0 3px 3px 0;
+            border-width: 0 2px 2px 0;
             transform: rotate(45deg);
+        }
+
+        .day-checkboxes input:checked ~ .checkmark:after {
+            display: block;
+        }
+
+        @media (max-width: 768px) {
+            .buttons {
+                grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            }
+            
+            #time {
+                font-size: 2rem;
+            }
+            
+            #day, #date {
+                font-size: 1.2rem;
+            }
+            
+            .day-checkboxes {
+                flex-direction: column;
+                gap: 5px;
+            }
+            
+            .day-checkboxes label {
+                margin-right: 0;
+            }
+            
+            .schedule-table {
+                display: block;
+                width: 100%;
+                overflow-x: auto;
+            }
+            
+            .action-button {
+                padding: 8px;
+                margin: 3px;
+                font-size: 0.8rem;
+                min-width: 80px;
+            }
         }
     </style>
 </head>
 <body>
     <header>
-        <h1>Relay Control Panel</h1>
+        <h1>Aquarium Control Panel</h1>
     </header>
     <div class="container">
-        <div id="time">Loading time...</div>
-        <div id="day">Loading day...</div>
-        <div id="date">Loading date...</div>
+        <div class="time-container">
+            <div id="time">Loading time...</div>
+            <div id="day">Loading day...</div>
+            <div id="date">Loading date...</div>
+        </div>
         <div id="temperature">Temperature: -- °C</div>
         <div class="buttons">
             <button class="button" onclick="toggleRelay(1)" id="btn1">WaveMaker</button>
             <button class="button" onclick="toggleRelay(2)" id="btn2">Light</button>
+            <button class="button" onclick="toggleRelay(3)" id="btn3">Air Pump</button>
             <button class="button" onclick="oneClickLight()" id="btnOneClick">Change Light Color</button>
             <button class="button" onclick="showLogs()">Show Logs</button>
         </div>
@@ -1304,6 +1606,7 @@ const char mainPage[] PROGMEM = R"html(
                 <option value="" disabled selected>Select Relay</option>
                 <option value="1">WaveMaker</option>
                 <option value="2">Light</option>
+                <option value="3">Air Pump</option>
             </select>
             <div id="relayError" class="error">Please select a relay.</div>
 
@@ -1376,7 +1679,8 @@ const char mainPage[] PROGMEM = R"html(
     <script>
         let relayStates = {
             1: false,
-            2: false
+            2: false,
+            3: false
         };
 
         let socket = new WebSocket('ws://' + window.location.hostname + ':81/');
@@ -1392,6 +1696,10 @@ const char mainPage[] PROGMEM = R"html(
                 if (data.relay2 !== undefined) {
                     relayStates[2] = data.relay2;
                     updateButtonStyle(2);
+                }
+                if (data.relay3 !== undefined) {
+                    relayStates[3] = data.relay3;
+                    updateButtonStyle(3);
                 }
                 if (data.temperature !== undefined) {
                     document.getElementById('temperature').textContent = 
@@ -1517,7 +1825,12 @@ const char mainPage[] PROGMEM = R"html(
                     let dayNames = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
                     schedules.forEach((schedule, index) => {
                         const row = table.insertRow();
-                        row.insertCell(0).textContent = schedule.relay == 1 ? "WaveMaker" : "Light";
+                        let relayName = "Unknown";
+                        if (schedule.relay == 1) relayName = "WaveMaker";
+                        else if (schedule.relay == 2) relayName = "Light";
+                        else if (schedule.relay == 3) relayName = "Air Pump";
+                        
+                        row.insertCell(0).textContent = relayName;
                         row.insertCell(1).textContent = `${String(schedule.onHour).padStart(2, '0')}:${String(schedule.onMinute).padStart(2, '0')}`;
                         row.insertCell(2).textContent = `${String(schedule.offHour).padStart(2, '0')}:${String(schedule.offMinute).padStart(2, '0')}`;
                         
@@ -1582,7 +1895,10 @@ const char mainPage[] PROGMEM = R"html(
             const btn = document.getElementById('btn' + relay);
             if (btn) {
                 btn.className = 'button ' + (relayStates[relay] ? 'on' : 'off');
-                const relayLabel = relay === 1 ? "WaveMaker" : "Light";
+                let relayLabel = "Unknown";
+                if (relay === 1) relayLabel = "WaveMaker";
+                else if (relay === 2) relayLabel = "Light";
+                else if (relay === 3) relayLabel = "Air Pump";
                 btn.textContent = `${relayLabel} (${relayStates[relay] ? 'ON' : 'OFF'})`;
             }
         }
@@ -1646,78 +1962,195 @@ const char logsPage[] PROGMEM = R"html(
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>System Logs</title>
     <style>
+        :root {
+            --primary-color: #1976D2;
+            --primary-dark: #0D47A1;
+            --primary-light: #BBDEFB;
+            --accent-color: #03A9F4;
+            --success-color: #4CAF50;
+            --warning-color: #FFC107;
+            --error-color: #F44336;
+            --text-color: #333;
+            --text-light: #757575;
+            --background-color: #f5f7fa;
+            --card-color: #ffffff;
+            --border-radius: 8px;
+            --shadow: 0 2px 10px rgba(0,0,0,0.1);
+            --transition: all 0.3s ease;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
         body {
             margin: 0;
             padding: 0;
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: #f0f2f5;
-            color: #333;
+            background-color: var(--background-color);
+            color: var(--text-color);
+            line-height: 1.6;
         }
+
         header {
-            background-color: #4CAF50;
+            background: linear-gradient(135deg, var(--primary-color), var(--primary-dark));
             color: white;
-            padding: 15px;
+            padding: 20px;
             text-align: center;
-            margin-bottom: 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            position: relative;
+            z-index: 10;
+            margin-bottom: 30px;
         }
+
+        header h1 {
+            margin: 0;
+            font-size: 2rem;
+            letter-spacing: 0.5px;
+        }
+
         .container {
             padding: 20px;
             max-width: 1200px;
             margin: auto;
         }
+
         .logs-table {
             width: 100%;
-            border-collapse: collapse;
-            background-color: white;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-            border-radius: 8px;
+            border-collapse: separate;
+            border-spacing: 0;
+            background-color: var(--card-color);
+            box-shadow: var(--shadow);
+            border-radius: var(--border-radius);
             overflow: hidden;
+            margin-bottom: 30px;
         }
+
         .logs-table th, .logs-table td {
-            padding: 12px 15px;
+            padding: 15px;
             text-align: left;
-            border-bottom: 1px solid #ddd;
         }
+
         .logs-table th {
-            background-color: #4CAF50;
+            background-color: var(--primary-color);
             color: white;
+            font-weight: 500;
         }
+
         .logs-table tr:nth-child(even) {
             background-color: #f9f9f9;
         }
-        .logs-table tr:hover {
-            background-color: #f5f5f5;
+
+        .logs-table tr {
+            transition: var(--transition);
+            border-bottom: 1px solid #eee;
         }
+
+        .logs-table tr:last-child {
+            border-bottom: none;
+        }
+
+        .logs-table tr:hover {
+            background-color: #f1f1f1;
+        }
+
         .button {
             display: inline-block;
-            padding: 10px 20px;
-            background-color: #4CAF50;
+            padding: 12px 24px;
+            background-color: var(--primary-color);
             color: white;
             text-decoration: none;
-            border-radius: 4px;
-            margin: 20px 0;
-            transition: background-color 0.3s;
+            border-radius: var(--border-radius);
+            margin: 5px 0 20px 0;
+            transition: var(--transition);
+            border: none;
+            cursor: pointer;
+            font-size: 1rem;
+            font-weight: 500;
+            box-shadow: var(--shadow);
+            text-align: center;
         }
+
         .button:hover {
-            background-color: #45a049;
+            background-color: var(--primary-dark);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 10px rgba(0,0,0,0.15);
         }
+
+        .button:active {
+            transform: translateY(1px);
+        }
+
         .refresh-button {
             float: right;
+            background-color: var(--success-color);
         }
+
+        .refresh-button:hover {
+            background-color: #388E3C;
+        }
+
         .header-actions {
             margin-bottom: 20px;
             overflow: hidden;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
         }
-        @media (max-width: 600px) {
+
+        @media (max-width: 768px) {
             .logs-table {
                 font-size: 14px;
             }
+            
             .logs-table th, .logs-table td {
-                padding: 8px 10px;
+                padding: 10px;
             }
+            
             .container {
                 padding: 10px;
             }
+            
+            .header-actions {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            
+            .button {
+                width: 100%;
+                margin: 5px 0;
+                text-align: center;
+            }
+            
+            .refresh-button {
+                float: none;
+            }
+        }
+
+        /* Loading animation */
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+        }
+
+        .loading-spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid var(--primary-color);
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
         }
     </style>
 </head>
@@ -1729,6 +2162,10 @@ const char logsPage[] PROGMEM = R"html(
         <div class="header-actions">
             <a href="/" class="button">Back to Dashboard</a>
             <button onclick="refreshLogs()" class="button refresh-button">Refresh Logs</button>
+        </div>
+        <div id="loading" class="loading">
+            <div class="loading-spinner"></div>
+            <p>Loading logs...</p>
         </div>
         <table class="logs-table">
             <thead>
@@ -1744,6 +2181,8 @@ const char logsPage[] PROGMEM = R"html(
     </div>
     <script>
         function loadLogs() {
+            document.getElementById('loading').style.display = 'block';
+            
             fetch('/logs/data')
                 .then(response => response.json())
                 .then(data => {
@@ -1758,8 +2197,13 @@ const char logsPage[] PROGMEM = R"html(
                             row.insertCell(2).textContent = log.message;
                         });
                     }
+                    
+                    document.getElementById('loading').style.display = 'none';
                 })
-                .catch(error => console.error('Error loading logs:', error));
+                .catch(error => {
+                    console.error('Error loading logs:', error);
+                    document.getElementById('loading').style.display = 'none';
+                });
         }
 
         function refreshLogs() {
@@ -1775,6 +2219,9 @@ const char logsPage[] PROGMEM = R"html(
 </html>
 )html";
 
+unsigned long lastWifiConnectAttempt = 0;
+const unsigned long WIFI_RECONNECT_INTERVAL = 30000;
+
 void handleLogsPage() {
   server.send_P(200, "text/html", logsPage);
 }
@@ -1786,12 +2233,28 @@ void loop() {
 void emailLoop(void* parameter) {
   for (;;) {
     handleTemperature();
-    if (WiFi.status() == WL_CONNECTED) {
+
+    if (WiFi.status() != WL_CONNECTED) {
+      unsigned long currentMillis = millis();
+      if (currentMillis - lastWifiConnectAttempt > WIFI_RECONNECT_INTERVAL) {
+        storeLogEntry("Attempting to reconnect to WiFi...");
+        WiFi.reconnect();
+        lastWifiConnectAttempt = currentMillis;
+      }
+    } else {
+      if (!validTimeSync) {
+        attemptTimeSync();
+      }
+
       if (!startupemail) {
         delay(1500);
         sendEmailWithLogs("Device is powered on");
         startupemail = true;
-        last90MinCheck = (hour() * 3600 + minute() * 60 + second());
+
+        struct tm timeinfo;
+        if (getLocalTime(&timeinfo)) {
+          last90MinCheck = timeinfo.tm_hour * 3600 + timeinfo.tm_min * 60 + timeinfo.tm_sec;
+        }
       }
 
       if (pointemail) {
@@ -1808,50 +2271,48 @@ void mainLoop(void* parameter) {
     server.handleClient();
     webSocket.loop();
     resetWatchdog();
-
     checkoverride1();
     checkoverride2();
     overrideLEDState();
 
-    if (!validTimeSync) {
-      if (timeClient.update()) {
-        epochTime = timeClient.getEpochTime();
-        setTime(epochTime);
-        lastNTPSync = millis();
-        validTimeSync = true;
-        validDateSync = true;
-        storeLogEntry("Time sync successful (retry)");
-        clearError();
-      } else {
-        storeLogEntry("Time sync failed (retry).");
-        indicateError();
+    if (!validTimeSync && WiFi.status() == WL_CONNECTED) {
+      unsigned long currentMillis = millis();
+      if (currentMillis - lastNtpRetry >= NTP_RETRY_INTERVAL) {
+        attemptTimeSync();
+        lastNtpRetry = currentMillis;
       }
     }
 
-    unsigned long currentMillis = millis();
-    if (currentMillis - lastTimeUpdate >= 1000) {
-      epochTime++;
-      lastTimeUpdate = currentMillis;
+    static unsigned long lastSecondCheck = 0;
+    if (millis() - lastSecondCheck >= 1000) {
+      lastSecondCheck = millis();
 
       if (validTimeSync) {
         checkSchedules();
 
-        unsigned long currentSeconds = hour() * 3600 + minute() * 60 + second();
-        if (currentSeconds - last90MinCheck >= CHECK_90MIN_INTERVAL || (last90MinCheck > currentSeconds && currentSeconds >= 0)) {
-          String timeStr = String(hour()) + ":" + (minute() < 10 ? "0" : "") + String(minute());
-          storeLogEntry("Device is powered on at " + timeStr);
-          last90MinCheck = currentSeconds;
+        struct tm timeinfo;
+        if (getLocalTime(&timeinfo)) {
+          unsigned long currentSeconds = timeinfo.tm_hour * 3600 + timeinfo.tm_min * 60 + timeinfo.tm_sec;
 
-          if (startupemail && !pointemail) {
-            pointemail = true;
+          // 90 minute check
+          if (currentSeconds - last90MinCheck >= CHECK_90MIN_INTERVAL || (last90MinCheck > currentSeconds && currentSeconds >= 0)) {
+            String timeStr = String(timeinfo.tm_hour) + ":" + (timeinfo.tm_min < 10 ? "0" : "") + String(timeinfo.tm_min);
+            storeLogEntry("Device is powered on at " + timeStr);
+            last90MinCheck = currentSeconds;
+
+            if (startupemail && !pointemail) {
+              pointemail = true;
+            }
           }
-        }
 
-        int newDay = day();
-        if (newDay != currentDay) {
-          storeLogEntry("Day changed to: " + String(newDay));
-          currentDay = newDay;
-          last90MinCheck = 0;
+          static int prevDay = -1;
+          if (prevDay == -1) {
+            prevDay = timeinfo.tm_mday;
+          } else if (timeinfo.tm_mday != prevDay) {
+            storeLogEntry("Day changed to: " + String(timeinfo.tm_mday));
+            prevDay = timeinfo.tm_mday;
+            last90MinCheck = 0;
+          }
         }
       }
     }
@@ -1867,45 +2328,88 @@ void mainLoop(void* parameter) {
       }
     }
 
+    if (millis() - lastNTPSync > 43200000) {
+      configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+      struct tm timeinfo;
+      if (getLocalTime(&timeinfo)) {
+        lastNTPSync = millis();
+        storeLogEntry("Regular time sync successful");
+        timeSyncErrorLogged = false;
+
+        setTime(timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec,
+                timeinfo.tm_mday, timeinfo.tm_mon + 1, timeinfo.tm_year + 1900);
+      } else {
+        if (!timeSyncErrorLogged) {
+          storeLogEntry("Regular time sync failed.");
+          timeSyncErrorLogged = true;
+        }
+      }
+    }
+
     delay(1);
   }
 }
 
 void checkSchedules() {
-  unsigned long hours = ((epochTime % 86400L) / 3600);
-  unsigned long minutes = ((epochTime % 3600) / 60);
-  unsigned long seconds = (epochTime % 60);
-  int weekdayIndex = weekday() - 1;
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) {
+    return;
+  }
+
+  int hours = timeinfo.tm_hour;
+  int minutes = timeinfo.tm_min;
+  int seconds = timeinfo.tm_sec;
+  int weekdayIndex = timeinfo.tm_wday;
 
   for (const Schedule& schedule : schedules) {
     if (!schedule.enabled || !schedule.daysOfWeek[weekdayIndex]) continue;
 
     if (hours == schedule.onHour && minutes == schedule.onMinute && seconds == 0) {
-      bool currentState = (schedule.relayNumber == 1) ? relay1State : relay2State;
-      bool override = (schedule.relayNumber == 1) ? overrideRelay1 : overrideRelay2;
-
-      if (!currentState && !override) {
-        activateRelay(schedule.relayNumber, false);
+      if (schedule.relayNumber == 1) {
+        if (!relay1State && !overrideRelay1) {
+          activateRelay(1, false);
+        }
+      } else if (schedule.relayNumber == 2) {
+        if (!relay2State && !overrideRelay2) {
+          activateRelay(2, false);
+        }
+      } else if (schedule.relayNumber == 3) {
+        if (!relay3State && !overrideRelay1) {
+          activateRelay(3, false);
+        }
       }
     } else if (hours == schedule.offHour && minutes == schedule.offMinute && seconds == 0) {
-      bool currentState = (schedule.relayNumber == 1) ? relay1State : relay2State;
-      bool override = (schedule.relayNumber == 1) ? overrideRelay1 : overrideRelay2;
-
-      if (currentState && !override) {
-        deactivateRelay(schedule.relayNumber, false);
+      if (schedule.relayNumber == 1) {
+        if (relay1State && !overrideRelay1) {
+          deactivateRelay(1, false);
+        }
+      } else if (schedule.relayNumber == 2) {
+        if (relay2State && !overrideRelay2) {
+          deactivateRelay(2, false);
+        }
+      } else if (schedule.relayNumber == 3) {
+        if (relay3State && !overrideRelay1) {
+          deactivateRelay(3, false);
+        }
       }
     }
   }
 }
 
 void checkScheduleslaunch() {
-  unsigned long hours = ((epochTime % 86400L) / 3600);
-  unsigned long minutes = ((epochTime % 3600) / 60);
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) {
+    return;
+  }
+
+  int hours = timeinfo.tm_hour;
+  int minutes = timeinfo.tm_min;
   unsigned long currentTime = hours * 60 + minutes;
-  int weekdayIndex = weekday() - 1;
+  int weekdayIndex = timeinfo.tm_wday;
 
   bool relay1ShouldBeOn = false;
   bool relay2ShouldBeOn = false;
+  bool relay3ShouldBeOn = false;
 
   for (const Schedule& schedule : schedules) {
     if (!schedule.enabled || !schedule.daysOfWeek[weekdayIndex]) {
@@ -1926,6 +2430,8 @@ void checkScheduleslaunch() {
       relay1ShouldBeOn |= shouldBeOn;
     } else if (schedule.relayNumber == 2) {
       relay2ShouldBeOn |= shouldBeOn;
+    } else if (schedule.relayNumber == 3) {
+      relay3ShouldBeOn |= shouldBeOn;
     }
   }
 
@@ -1936,6 +2442,14 @@ void checkScheduleslaunch() {
     } else {
       deactivateRelay(1, false);
       storeLogEntry("Relay 1 deactivated by startup schedule check");
+    }
+
+    if (relay3ShouldBeOn) {
+      activateRelay(3, false);
+      storeLogEntry("Relay 3 activated by startup schedule check");
+    } else {
+      deactivateRelay(3, false);
+      storeLogEntry("Relay 3 deactivated by startup schedule check");
     }
   }
 
@@ -1951,7 +2465,7 @@ void checkScheduleslaunch() {
 }
 
 void activateRelay(int relayNum, bool manual) {
-  if (!manual && ((relayNum == 1 && overrideRelay1) || (relayNum == 2 && overrideRelay2))) {
+  if (!manual && ((relayNum == 1 && overrideRelay1) || (relayNum == 2 && overrideRelay2) || (relayNum == 3 && overrideRelay1))) {
     storeLogEntry("Relay " + String(relayNum) + " is overridden. Activation skipped.");
     return;
   }
@@ -1966,12 +2480,17 @@ void activateRelay(int relayNum, bool manual) {
       toggleLightSequence();
       storeLogEntry("Relay 2 activated with toggle sequence.");
       break;
+    case 3:
+      digitalWrite(relay3, LOW);
+      relay3State = true;
+      storeLogEntry("Relay 3 (Air Pump) activated.");
+      break;
   }
   broadcastRelayStates();
 }
 
 void deactivateRelay(int relayNum, bool manual) {
-  if (!manual && ((relayNum == 1 && overrideRelay1) || (relayNum == 2 && overrideRelay2))) {
+  if (!manual && ((relayNum == 1 && overrideRelay1) || (relayNum == 2 && overrideRelay2) || (relayNum == 3 && overrideRelay1))) {
     storeLogEntry("Relay " + String(relayNum) + " is overridden. Deactivation skipped.");
     return;
   }
@@ -1987,14 +2506,17 @@ void deactivateRelay(int relayNum, bool manual) {
       relay2State = false;
       storeLogEntry("Relay 2 deactivated.");
       break;
+    case 3:
+      digitalWrite(relay3, HIGH);
+      relay3State = false;
+      storeLogEntry("Relay 3 (Air Pump) deactivated.");
+      break;
   }
   broadcastRelayStates();
 }
 
 void broadcastRelayStates() {
-  String message = "{\"relay1\":" + String(relay1State || overrideRelay1) + 
-                  ",\"relay2\":" + String(relay2State || overrideRelay2) + 
-                  ",\"temperature\":" + String(lastValidTemperature, 1) + "}";
+  String message = "{\"relay1\":" + String(relay1State || overrideRelay1) + ",\"relay2\":" + String(relay2State || overrideRelay2) + ",\"relay3\":" + String(relay3State || overrideRelay1) + ",\"temperature\":" + String(lastValidTemperature, 1) + "}";
   webSocket.broadcastTXT(message);
 }
 
@@ -2057,6 +2579,12 @@ void handleAddSchedule() {
       for (int i = 0; i < 7; i++) {
         newSchedule.daysOfWeek[i] = doc["days"][i] | false;
       }
+
+      String dayConfig = "Schedule days: ";
+      for (int i = 0; i < 7; i++) {
+        dayConfig += String(newSchedule.daysOfWeek[i] ? "1" : "0");
+      }
+      storeLogEntry(dayConfig + " (Sun,Mon,Tue,Wed,Thu,Fri,Sat)");
 
       bool conflict = false;
       for (const Schedule& existing : schedules) {
@@ -2204,6 +2732,19 @@ void handleRelay2() {
   }
 }
 
+void handleRelay3() {
+  if (server.method() == HTTP_POST) {
+    if (overrideRelay1) {
+      server.send(403, "application/json", "{\"error\":\"Physical override active\"}");
+      return;
+    }
+    toggleRelay(relay3, relay3State);
+    server.send(200, "application/json", "{\"state\":" + String(relay3State) + "}");
+  } else if (server.method() == HTTP_GET) {
+    server.send(200, "application/json", "{\"state\":" + String(relay3State) + "}");
+  }
+}
+
 void toggleLightSequence() {
   for (int i = 0; i < TOGGLE_COUNT; i++) {
     digitalWrite(relay2, HIGH);
@@ -2218,20 +2759,21 @@ void toggleLightSequence() {
 }
 
 void handleTime() {
-  unsigned long currentEpoch = epochTime;
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) {
+    server.send(500, "text/plain", "Error getting time");
+    return;
+  }
 
-  setTime(currentEpoch);
-
-  int currentYearVal = year();
-  int currentMonthVal = month();
-  int currentDayVal = day();
-
-  int currentWeekday = weekday();
   const char* daysOfWeek[7] = { "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" };
-  String currentDayName = daysOfWeek[currentWeekday - 1];
+  String currentDayName = daysOfWeek[timeinfo.tm_wday];
 
-  String formattedTime = String(hour()) + ":" + (minute() < 10 ? "0" : "") + String(minute()) + ":" + (second() < 10 ? "0" : "") + String(second());
-  String formattedDate = String(currentDayVal) + "/" + String(currentMonthVal) + "/" + String(currentYearVal);
+  String formattedTime = String(timeinfo.tm_hour) + ":" + (timeinfo.tm_min < 10 ? "0" : "") + String(timeinfo.tm_min) + ":" + (timeinfo.tm_sec < 10 ? "0" : "") + String(timeinfo.tm_sec);
+
+  String formattedDate = String(timeinfo.tm_mday) + "/" + String(timeinfo.tm_mon + 1) + "/" +
+
+                         String(timeinfo.tm_year + 1900);
+
   String response = formattedTime + " " + currentDayName + " " + formattedDate;
   server.send(200, "text/plain", response);
 }
@@ -2239,7 +2781,8 @@ void handleTime() {
 void handleRelayStatus() {
   String json = "{";
   json += "\"1\":" + String(relay1State || overrideRelay1) + ",";
-  json += "\"2\":" + String(relay2State || overrideRelay2) + "}";
+  json += "\"2\":" + String(relay2State || overrideRelay2) + ",";
+  json += "\"3\":" + String(relay3State || overrideRelay1) + "}";
   server.send(200, "application/json", json);
 }
 
@@ -2283,14 +2826,20 @@ void checkoverride1() {
     if (!relay1State) {
       activateRelay(1, true);
     }
-    storeLogEntry("Relay 1 override activated");
+    if (!relay3State) {
+      activateRelay(3, true);
+    }
+    storeLogEntry("Relay 1 and 3 override activated");
     broadcastRelayStates();
   } else if (!currentReading && overrideRelay1) {
     overrideRelay1 = false;
     if (relay1State) {
       deactivateRelay(1, true);
     }
-    storeLogEntry("Relay 1 override deactivated");
+    if (relay3State) {
+      deactivateRelay(3, true);
+    }
+    storeLogEntry("Relay 1 and 3 override deactivated");
     broadcastRelayStates();
   }
 }
@@ -2347,7 +2896,7 @@ void sendEmailWithLogs(const String& trigger) {
     return;
   }
 
-  if (!SPIFFS.exists("/logs.json")) {
+  if (!LittleFS.exists("/logs.json")) {
     storeLogEntry("Failed to send email: logs.json does not exist");
     return;
   }
@@ -2375,13 +2924,22 @@ void sendEmailWithLogs(const String& trigger) {
   message.subject = String(emailSubject) + " - " + trigger;
   message.addRecipient("User", emailRecipient);
 
+  struct tm timeinfo;
+  String formattedTime = "Unknown";
+  if (getLocalTime(&timeinfo)) {
+    char timeStr[20];
+    sprintf(timeStr, "%02d:%02d:%02d", timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+    formattedTime = String(timeStr);
+  }
+
   String textMsg = "Aquarium Control System Report\n";
   textMsg += "Event: " + trigger + "\n";
-  textMsg += "Timestamp: " + timeClient.getFormattedTime() + "\n\n";
+  textMsg += "Timestamp: " + formattedTime + "\n\n";
   textMsg += "System Status:\n";
   textMsg += "Temperature: " + String(lastValidTemperature, 1) + " °C\n";
   textMsg += "Relay 1 (WaveMaker): " + String(relay1State ? "ON" : "OFF") + "\n";
   textMsg += "Relay 2 (Light): " + String(relay2State ? "ON" : "OFF") + "\n";
+  textMsg += "Relay 3 (Air Pump): " + String(relay3State ? "ON" : "OFF") + "\n";
   textMsg += "Override 1: " + String(overrideRelay1 ? "Active" : "Inactive") + "\n";
   textMsg += "Override 2: " + String(overrideRelay2 ? "Active" : "Inactive") + "\n";
   textMsg += "Error Status: " + String(hasError ? "Error Present" : "No Errors") + "\n\n";
@@ -2391,7 +2949,7 @@ void sendEmailWithLogs(const String& trigger) {
   message.text.charSet = "us-ascii";
   message.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
 
-  File logsFile = SPIFFS.open("/logs.json", "r");
+  File logsFile = LittleFS.open("/logs.json", "r");
   if (!logsFile) {
     storeLogEntry("Failed to open logs file for email");
     return;
@@ -2431,28 +2989,49 @@ void sendEmailWithLogs(const String& trigger) {
 }
 
 void handleTemperature() {
-    if (millis() - lastTemp >= 5000) {
-        sensors.requestTemperatures();
-        float tempC = sensors.getTempC(sensorAddress);
-        
-        if(tempC != DEVICE_DISCONNECTED_C) {
-            currentTemp = tempC;
-            lastValidTemperature = tempC;
-            broadcastRelayStates();
-            consecutiveTempFailures = 0;
-            if (hasTempError) {
-                clearError();
-                hasTempError = false;
-            }
-        } else {
-            consecutiveTempFailures++;
-            if (consecutiveTempFailures >= MAX_TEMP_FAILURES) {
-                storeLogEntry("Error: Temperature sensor failed " + String(consecutiveTempFailures) + " times");
-                indicateError();
-                hasTempError = true;
-            }
+  if (millis() - lastTemp >= 5000) {
+    sensors.requestTemperatures();
+    float tempC = sensors.getTempC(sensorAddress);
+
+    if (tempC != DEVICE_DISCONNECTED_C) {
+      currentTemp = tempC;
+      lastValidTemperature = tempC;
+      broadcastRelayStates();
+      consecutiveTempFailures = 0;
+      if (hasTempError) {
+        clearError();
+        hasTempError = false;
+        tempErrorLogged = false;
+      }
+    } else {
+      consecutiveTempFailures++;
+      if (consecutiveTempFailures >= MAX_TEMP_FAILURES) {
+        if (!tempErrorLogged) {
+          storeLogEntry("Error: Temperature sensor failed " + String(consecutiveTempFailures) + " times");
+          tempErrorLogged = true;
         }
-        
-        lastTemp = millis();
+        indicateError();
+        hasTempError = true;
+      }
     }
+
+    lastTemp = millis();
+  }
+}
+
+void templaunch() {
+  sensors.requestTemperatures();
+  float tempC = sensors.getTempC(sensorAddress);
+
+  if (tempC != DEVICE_DISCONNECTED_C) {
+    currentTemp = tempC;
+    lastValidTemperature = tempC;
+    broadcastRelayStates();
+    consecutiveTempFailures = 0;
+    if (hasTempError) {
+      clearError();
+      hasTempError = false;
+      tempErrorLogged = false;
+    }
+  }
 }
