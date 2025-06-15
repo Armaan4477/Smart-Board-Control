@@ -1,35 +1,92 @@
-# Smart Home Relay Controller
+# Automated ESP Aquarium Controller
 
-## Description
-
-The Smart Home Relay Controller is a robust solution for automating two relays in a smart home environment. It leverages both web-based controls and physical inputs to provide seamless and reliable management of home automation tasks.
+This project is an ESP32-based aquarium control system that automates and monitors various aquarium equipment including lights, wave makers, air pumps, and temperature control.
 
 ## Features
 
-- **Manual Toggle from Website:** Control relays through a user-friendly web interface.
-- **Physical Toggle Button:** Override web controls with a physical button for immediate action.
-- **Time-Based Scheduling:** Schedule relay operations based on time, with local time tracking after initial synchronization.
-- **Watchdog Logic:** Automatically reboot the system if the device becomes unresponsive.
-- **Security:** Basic password protection to prevent unauthorized access, exempting allowed local IPs.
+- **Web Interface**: Control your aquarium from any device on your network
+- **Equipment Control**: Manage multiple relays for different equipment:
+  - Wave Maker (Relay 1)
+  - Light with color cycling (Relay 2)
+  - Air Pump (Relay 3)
+  - Heater with temperature control (Relay 4)
+- **Scheduling**: Set detailed schedules with day-of-week support
+- **Temperature Monitoring**: Real-time temperature display with configurable thresholds
+- **Automatic Heater Control**: Maintain water temperature within set parameters
+- **Manual Override**: Physical switches for direct control
+- **Logging System**: Store and display system events
+- **Email Notifications**: Receive system status emails and alerts
+- **Error Detection**: Visual indication of system errors
+- **NTP Time Synchronization**: Accurate timekeeping for schedules
 
-## Scheduling Fail-Safes
+## Hardware Requirements
 
-- **Persistent Schedules:** Retain all schedules across shutdowns and reboots.
-- **Time-Server Synchronization:** Ensure schedules are only executed after successful time synchronization.
-- **Override Mechanisms:** Allow physical and web-based toggles to take precedence over scheduled tasks.
-- **Resume Active Schedules:** Automatically resume active schedules upon device power-on.
-- **Conflict Avoidance:** Prevent the addition of conflicting schedules.
-- **Flexible Activation:** Enable activation or deactivation of schedules without needing to delete them entirely.
+- ESP32 development board
+- 4-channel relay module
+- DS18B20 temperature sensor
+- 2 switches for manual override
+- Status LED
+- 4.7kΩ resistor (for temperature sensor)
+- Power supply
+- Aquarium equipment to control (pumps, lights, heater, etc.)
 
-## Additional Features
+## Wiring
 
-- **Comprehensive Logging:** Access all logs through the web UI for real-time error monitoring.
-- **Error Indicators:** Utilize a physical LED to signal device errors.
-- **WiFi Resilience:** Operate independently if WiFi connection is lost, maintaining functionality until reconnection.
-- **Priority Overrides:** Ensure physical buttons always take precedence over software controls and scheduling.
+- Relay 1 (Wave Maker): GPIO16
+- Relay 2 (Light): GPIO17
+- Relay 3 (Air Pump): GPIO18
+- Relay 4 (Heater): GPIO19
+- Switch 1 (Override 1): GPIO23
+- Switch 2 (Override 2): GPIO22
+- Error LED: GPIO21
+- Temperature Sensor: GPIO26
 
 ## Installation
 
-1. **Clone the Repository:**
-   ```bash
-   git clone https://github.com/Armaan4477/Automated-ESP.git
+1. Clone this repository
+2. Open the project in Arduino IDE or PlatformIO
+3. Install required libraries:
+   - WiFi
+   - WebServer
+   - WebSocketsServer
+   - ArduinoJson
+   - LittleFS
+   - ESP_Mail_Client
+   - OneWire
+   - DallasTemperature
+   - TimeLib
+4. Configure your WiFi credentials and email settings in the code
+5. Upload the code to your ESP32
+6. Access the web interface via the ESP32's IP address
+
+## Configuration
+
+Edit these parameters in the code to match your setup:
+
+```cpp
+const char* ssid = "Your_WiFi_SSID";
+const char* password = "Your_WiFi_Password";
+const char* emailSenderAccount = "your_email@gmail.com";
+const char* emailSenderPassword = "your_app_password";
+const char* emailRecipient = "recipient_email@example.com";
+```
+
+## Usage
+
+### Web Interface
+
+Access the web interface by navigating to the ESP32's IP address in a web browser. From here you can:
+- Control equipment manually
+- View and set temperature thresholds
+- Create and manage schedules
+- View system logs
+- Clear error states
+
+### Manual Overrides
+
+- Activate Switch 1 to override and enable Wave Maker and Air Pump (Relay 1 and 3)
+- Activate Switch 2 to override and enable Light (Relay 2)
+
+## License
+
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
