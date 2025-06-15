@@ -43,6 +43,12 @@ void activateRelay(int, bool);
 void deactivateRelay(int, bool);
 void toggleLightSequence();
 void broadcastRelayStates();
+void handleGetTemperatureSettings();
+void handleSaveTemperatureSettings();
+void handleToggleTemperatureControl();
+void loadTemperatureSettings();
+void saveTemperatureSettings();
+void checkTemperatureControl();
 
 struct Schedule {
   int id;
@@ -61,9 +67,16 @@ struct LogEntry {
   String message;
 };
 
+struct TemperatureData {
+  int minTemp;
+  int maxTemp;
+  bool enabled;
+};
+
 const int relay1 = 16;
 const int relay2 = 17;
 const int relay3 = 18;
+const int relay4 = 19;
 const int switch1Pin = 23;
 const int switch2Pin = 22;
 const int errorLEDPin = 21;
@@ -77,6 +90,7 @@ bool relay4State = false;
 bool timeSyncErrorLogged = false;
 bool tempErrorLogged = false;
 bool triggerederror = false;
+bool wifiConnectionErrorLogged = false;
 
 const char* ssid = "Free Public Wi-Fi";
 const char* password = "2A0R0M4AAN";
@@ -100,6 +114,7 @@ bool startupemail = false;
 bool pointemail = false;
 unsigned long logIdCounter = 0;
 std::vector<Schedule> schedules;
+std::vector<TemperatureData> temperatureData;
 void handleAddSchedule();
 void handleDeleteSchedule();
 void handleClearError();
@@ -108,6 +123,8 @@ const int EEPROM_SIZE = 512;
 const int SCHEDULE_SIZE = sizeof(Schedule);
 const int MAX_SCHEDULES = 10;
 const int SCHEDULE_START_ADDR = 0;
+const int TEMP_SETTINGS_START_ADDR = SCHEDULE_START_ADDR + (MAX_SCHEDULES * SCHEDULE_SIZE) + 1;
+const int TEMP_SETTINGS_SIZE = sizeof(TemperatureData);
 const int TOGGLE_DELAY = 500;
 const int TOGGLE_COUNT = 3;
 const std::vector<String> allowedIPs = {
@@ -816,9 +833,6 @@ void checkWatchdog() {
   }
 }
 
-unsigned int currentDay = 1;
-unsigned int currentMonth = 1;
-unsigned int currentyear = 2023;
 bool validDateSync = false;
 
 TaskHandle_t networkTask;
@@ -829,7 +843,9 @@ void attemptTimeSync() {
 
   struct tm timeinfo;
   if (getLocalTime(&timeinfo)) {
-    storeLogEntry("Time and Date sync successful");
+    if (!validTimeSync || timeSyncErrorLogged) {
+      storeLogEntry("Time and Date sync successful");
+    }
     validTimeSync = true;
     validDateSync = true;
     lastNTPSync = millis();
@@ -848,7 +864,10 @@ void attemptTimeSync() {
 }
 
 void onWifiConnected(WiFiEvent_t event, WiFiEventInfo_t info) {
-  storeLogEntry("Connected to WiFi. IP: " + WiFi.localIP().toString());
+  if (!wifiConnectionErrorLogged) {
+    storeLogEntry("Connected to WiFi. IP: " + WiFi.localIP().toString());
+    wifiConnectionErrorLogged = false;  // Reset the error flag on successful connection
+  }
   attemptTimeSync();
 }
 
@@ -856,14 +875,15 @@ void setup() {
   pinMode(relay1, OUTPUT);
   pinMode(relay2, OUTPUT);
   pinMode(relay3, OUTPUT);
+  pinMode(relay4, OUTPUT);
+  digitalWrite(relay1, HIGH);
+  digitalWrite(relay2, HIGH);
+  digitalWrite(relay3, HIGH);
+  digitalWrite(relay4, HIGH);
   pinMode(switch1Pin, INPUT_PULLUP);
   pinMode(switch2Pin, INPUT_PULLUP);
   pinMode(errorLEDPin, OUTPUT);
   pinMode(ONE_WIRE_BUS, INPUT_PULLUP);
-
-  digitalWrite(relay1, HIGH);
-  digitalWrite(relay2, HIGH);
-  digitalWrite(relay3, HIGH);
   digitalWrite(errorLEDPin, LOW);
 
   // Serial.begin(115200);
@@ -916,14 +936,17 @@ void setup() {
   server.on("/error/clear", HTTP_POST, handleClearError);
   server.on("/error/status", HTTP_GET, handleGetErrorStatus);
   server.on("/relay/oneclick", HTTP_POST, handleOneClickLight);
+  server.on("/temperature/settings", HTTP_GET, handleGetTemperatureSettings);
+  server.on("/temperature/save", HTTP_POST, handleSaveTemperatureSettings);
   server.begin();
   EEPROM.begin(EEPROM_SIZE);
   loadSchedulesFromEEPROM();
+  loadTemperatureSettings();
+
+  templaunch();
 
   webSocket.begin();
   webSocket.onEvent(webSocketEvent);
-
-  templaunch();
 
   resetWatchdog();
   watchdogTicker.attach(1, checkWatchdog);
@@ -991,6 +1014,35 @@ void loadSchedulesFromEEPROM() {
   }
 }
 
+void loadTemperatureSettings() {
+  if (temperatureData.empty()) {
+    TemperatureData data;
+    data.minTemp = 24;
+    data.maxTemp = 29;
+    data.enabled = false;
+    temperatureData.push_back(data);
+  }
+
+  TemperatureData storedData;
+  EEPROM.get(TEMP_SETTINGS_START_ADDR, storedData);
+
+  if (storedData.minTemp >= 20 && storedData.minTemp <= 30 && storedData.maxTemp >= 20 && storedData.maxTemp <= 30 && storedData.minTemp < storedData.maxTemp) {
+    temperatureData[0] = storedData;
+    storeLogEntry("Temperature settings loaded from EEPROM");
+  } else {
+    storeLogEntry("Using default temperature settings");
+    saveTemperatureSettings();
+  }
+}
+
+void saveTemperatureSettings() {
+  if (!temperatureData.empty()) {
+    EEPROM.put(TEMP_SETTINGS_START_ADDR, temperatureData[0]);
+    EEPROM.commit();
+    storeLogEntry("Temperature settings saved to EEPROM");
+  }
+}
+
 void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length) {
   switch (type) {
     case WStype_DISCONNECTED:
@@ -1001,7 +1053,7 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length)
         IPAddress ip = webSocket.remoteIP(num);
         storeLogEntry("WebSocket " + String(num) + " Connected from " + ip.toString() + " url: " + String((char*)payload));
 
-        String message = "{\"relay1\":" + String(relay1State || overrideRelay1) + ",\"relay2\":" + String(relay2State || overrideRelay2) + ",\"relay3\":" + String(relay3State || overrideRelay1) + ",\"temperature\":" + String(lastValidTemperature, 1) + "}";
+        String message = "{\"relay1\":" + String(relay1State || overrideRelay1) + ",\"relay2\":" + String(relay2State || overrideRelay2) + ",\"relay3\":" + String(relay3State || overrideRelay1) + ",\"temperature\":" + String(lastValidTemperature, 1) + ",\"relay1Name\":\"WaveMaker\"" + ",\"relay2Name\":\"Light\"" + ",\"relay3Name\":\"Air Pump\"}";
         webSocket.sendTXT(num, message);
       }
       break;
@@ -1579,6 +1631,229 @@ const char mainPage[] PROGMEM = R"html(
                 min-width: 80px;
             }
         }
+        .temp-control {
+            background-color: var(--card-color);
+            padding: 25px;
+            border-radius: var(--border-radius);
+            box-shadow: var(--shadow);
+            margin-bottom: 25px;
+            transition: var(--transition);
+        }
+        
+        .temp-control:hover {
+            box-shadow: 0 5px 15px rgba(0,0,0,0.15);
+        }
+        
+        .temp-control h3 {
+            color: var(--primary-color);
+            margin-bottom: 15px;
+            font-size: 1.5rem;
+            border-bottom: 2px solid var(--primary-light);
+            padding-bottom: 10px;
+        }
+        
+        .temp-control .slider-container {
+            margin: 25px 0;
+        }
+        
+        .temp-control .slider-container label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 500;
+        }
+        
+        .temp-control .range-values {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 10px;
+            color: var(--text-light);
+        }
+        
+        .temp-control .current-value {
+            text-align: center;
+            font-size: 1.2rem;
+            font-weight: bold;
+            color: var(--primary-color);
+            margin: 10px 0;
+        }
+        
+        .temp-control input[type="range"] {
+            width: 100%;
+            height: 8px;
+            border-radius: 5px;
+            background: #ddd;
+            outline: none;
+            -webkit-appearance: none;
+        }
+        
+        .temp-control input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: var(--primary-color);
+            cursor: pointer;
+            transition: var(--transition);
+        }
+        
+        .temp-control input[type="range"]::-webkit-slider-thumb:hover {
+            background: var(--primary-dark);
+            transform: scale(1.1);
+        }
+        
+        .temp-control .toggle-container {
+            display: flex;
+            align-items: center;
+            margin: 20px 0;
+        }
+        
+        .temp-control .toggle-switch {
+            position: relative;
+            display: inline-block;
+            width: 60px;
+            height: 34px;
+            margin-right: 15px;
+        }
+        
+        .temp-control .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        
+        .temp-control .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #ccc;
+            transition: .4s;
+            border-radius: 34px;
+        }
+        
+        .temp-control .slider:before {
+            position: absolute;
+            content: "";
+            height: 26px;
+            width: 26px;
+            left: 4px;
+            bottom: 4px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+        }
+        
+        .temp-control input:checked + .slider {
+            background-color: var(--success-color);
+        }
+        
+        .temp-control input:focus + .slider {
+            box-shadow: 0 0 1px var(--success-color);
+        }
+        
+        .temp-control input:checked + .slider:before {
+            transform: translateX(26px);
+        }
+        
+        .temp-control .toggle-label {
+            font-size: 1rem;
+            font-weight: 500;
+        }
+        
+        .temp-control .temp-buttons {
+            display: flex;
+            justify-content: flex-end;
+        }
+        
+        .temp-control .save-button {
+            padding: 10px 20px;
+            background-color: var(--primary-color);
+            color: white;
+            border: none;
+            border-radius: var(--border-radius);
+            cursor: pointer;
+            transition: var(--transition);
+            font-weight: 500;
+        }
+        
+        .temp-control .save-button:hover {
+            background-color: var(--primary-dark);
+            transform: translateY(-2px);
+        }
+        
+        .temp-control .temp-values-display {
+            display: flex;
+            justify-content: space-between;
+            margin: 20px 0;
+            font-size: 1.1rem;
+        }
+        
+        .temp-control .temp-value-box {
+            text-align: center;
+            padding: 15px;
+            background-color: #f5f7fa;
+            border-radius: var(--border-radius);
+            flex: 1;
+            margin: 0 5px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+        }
+        
+        .temp-control .temp-value-box span {
+            font-weight: bold;
+            color: var(--primary-color);
+        }
+        
+        .temp-control .temp-value-box.min-temp {
+            border-left: 4px solid var(--warning-color);
+        }
+        
+        .temp-control .temp-value-box.max-temp {
+            border-left: 4px solid var(--error-color);
+        }
+        
+        .temp-control .temp-value-box.current-temp {
+            border-left: 4px solid var(--success-color);
+        }
+
+        .temp-control .heater-status {
+            margin: 20px 0;
+            padding: 15px;
+            background-color: #f5f7fa;
+            border-radius: var(--border-radius);
+            border-left: 4px solid var(--primary-color);
+        }
+
+        .temp-control .status-indicator {
+            display: flex;
+            align-items: center;
+        }
+
+        .temp-control .status-dot {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 10px;
+            background-color: #ccc;
+        }
+
+        .temp-control .status-dot.on {
+            background-color: var(--success-color);
+            box-shadow: 0 0 5px var(--success-color);
+        }
+
+        .temp-control .status-dot.off {
+            background-color: var(--error-color);
+            box-shadow: 0 0 5px var(--error-color);
+        }
+
+        .temp-control .status-text {
+            font-size: 1.1rem;
+            font-weight: 500;
+        }
     </style>
 </head>
 <body>
@@ -1594,10 +1869,67 @@ const char mainPage[] PROGMEM = R"html(
         <div id="temperature">Temperature: -- °C</div>
         <div class="buttons">
             <button class="button" onclick="toggleRelay(1)" id="btn1">WaveMaker</button>
-            <button class="button" onclick="toggleRelay(2)" id="btn2">Light</button>
             <button class="button" onclick="toggleRelay(3)" id="btn3">Air Pump</button>
+            <button class="button" onclick="toggleRelay(2)" id="btn2">Light</button>
             <button class="button" onclick="oneClickLight()" id="btnOneClick">Change Light Color</button>
             <button class="button" onclick="showLogs()">Show Logs</button>
+        </div>
+        <div class="temp-control">
+            <h3>Heater Control</h3>
+
+            <div class="heater-status">
+                <div class="status-indicator">
+                    <span class="status-dot" id="heater-status-dot"></span>
+                    <span class="status-text">Heater Status: <span id="heater-status">Unknown</span></span>
+                </div>
+            </div>
+            
+            <div class="temp-values-display">
+                <div class="temp-value-box min-temp">
+                    <div>Min Temperature</div>
+                    <span id="min-temp-display">--</span> °C
+                </div>
+                <div class="temp-value-box max-temp">
+                    <div>Max Temperature</div>
+                    <span id="max-temp-display">--</span> °C
+                </div>
+            </div>
+            
+            <div class="slider-container">
+                <label for="min-temp-slider">Minimum Temperature (°C):</label>
+                <input type="range" id="min-temp-slider" min="20" max="30" step="0.5" value="24">
+                <div class="current-value">
+                    <span id="min-temp-value">24</span> °C
+                </div>
+                <div class="range-values">
+                    <span>20°C</span>
+                    <span>30°C</span>
+                </div>
+            </div>
+            
+            <div class="slider-container">
+                <label for="max-temp-slider">Maximum Temperature (°C):</label>
+                <input type="range" id="max-temp-slider" min="20" max="30" step="0.5" value="28">
+                <div class="current-value">
+                    <span id="max-temp-value">28</span> °C
+                </div>
+                <div class="range-values">
+                    <span>20°C</span>
+                    <span>30°C</span>
+                </div>
+            </div>
+            
+            <div class="toggle-container">
+                <label class="toggle-switch">
+                    <input type="checkbox" id="temp-control-toggle">
+                    <span class="slider"></span>
+                </label>
+                <div class="toggle-label">Temperature Control</div>
+            </div>
+            
+            <div class="temp-buttons">
+                <button class="save-button" onclick="saveTemperatureSettings()">Save Settings</button>
+            </div>
         </div>
         <div class="schedule-form">
             <h3>Add Schedule</h3>
@@ -1689,6 +2021,12 @@ const char mainPage[] PROGMEM = R"html(
         socket.onmessage = (event) => {
             try {
                 let data = JSON.parse(event.data);
+                
+                if (data.relay1Name) window.relay1Name = data.relay1Name;
+                if (data.relay2Name) window.relay2Name = data.relay2Name;
+                if (data.relay3Name) window.relay3Name = data.relay3Name;
+                if (data.relay4Name) window.relay4Name = data.relay4Name;
+                
                 if (data.relay1 !== undefined) {
                     relayStates[1] = data.relay1;
                     updateButtonStyle(1);
@@ -1701,9 +2039,23 @@ const char mainPage[] PROGMEM = R"html(
                     relayStates[3] = data.relay3;
                     updateButtonStyle(3);
                 }
+                if (data.relay4 !== undefined) {
+                    updateHeaterStatus(data.relay4);
+                }
                 if (data.temperature !== undefined) {
                     document.getElementById('temperature').textContent = 
                         `Temperature: ${data.temperature} °C`;
+                    document.getElementById('current-temp-display').textContent = data.temperature;
+                }
+                if (data.minTemp !== undefined) {
+                    document.getElementById('min-temp-display').textContent = data.minTemp;
+                }
+                if (data.maxTemp !== undefined) {
+                    document.getElementById('max-temp-display').textContent = data.maxTemp;
+                }
+                if (data.tempControlEnabled !== undefined) {
+                    document.getElementById('temp-control-status').textContent = 
+                        data.tempControlEnabled ? 'Enabled' : 'Disabled';
                 }
             } catch (e) {
                 console.error('WebSocket error:', e);
@@ -1885,7 +2237,6 @@ const char mainPage[] PROGMEM = R"html(
             }
         }
 
-        // Add event listeners to input fields
         document.getElementById('relaySelect').addEventListener('change', checkFields);
         document.getElementById('onTime').addEventListener('input', checkFields);
         document.getElementById('offTime').addEventListener('input', checkFields);
@@ -1896,9 +2247,14 @@ const char mainPage[] PROGMEM = R"html(
             if (btn) {
                 btn.className = 'button ' + (relayStates[relay] ? 'on' : 'off');
                 let relayLabel = "Unknown";
-                if (relay === 1) relayLabel = "WaveMaker";
+                
+                if (relay === 1 && window.relay1Name) relayLabel = window.relay1Name;
+                else if (relay === 2 && window.relay2Name) relayLabel = window.relay2Name;
+                else if (relay === 3 && window.relay3Name) relayLabel = window.relay3Name;
+                else if (relay === 1) relayLabel = "WaveMaker";
                 else if (relay === 2) relayLabel = "Light";
                 else if (relay === 3) relayLabel = "Air Pump";
+                
                 btn.textContent = `${relayLabel} (${relayStates[relay] ? 'ON' : 'OFF'})`;
             }
         }
@@ -1906,7 +2262,13 @@ const char mainPage[] PROGMEM = R"html(
         function getInitialStates() {
             fetch('/relay/status')
                 .then(response => response.json())
-                .then(data => { relayStates = data; for(let relay in relayStates) updateButtonStyle(relay); })
+                .then(data => { 
+                    relayStates = data; 
+                    for(let relay in relayStates) updateButtonStyle(relay);
+                    if (data["4"] !== undefined) {
+                        updateHeaterStatus(data["4"]);
+                    }
+                })
                 .catch(() => checkErrorStatus());
         }
 
@@ -1940,6 +2302,82 @@ const char mainPage[] PROGMEM = R"html(
             }))
             .catch(error => alert(error.message));
         }
+        
+        function updateTemperatureSliders() {
+            document.getElementById('min-temp-value').textContent = document.getElementById('min-temp-slider').value;
+            document.getElementById('max-temp-value').textContent = document.getElementById('max-temp-slider').value;
+        }
+
+        function loadTemperatureSettings() {
+            fetch('/temperature/settings')
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('min-temp-slider').value = data.minTemp;
+                    document.getElementById('max-temp-slider').value = data.maxTemp;
+                    document.getElementById('temp-control-toggle').checked = data.enabled;
+                    
+                    // Update display values
+                    document.getElementById('min-temp-value').textContent = data.minTemp;
+                    document.getElementById('max-temp-value').textContent = data.maxTemp;
+                    document.getElementById('min-temp-display').textContent = data.minTemp;
+                    document.getElementById('max-temp-display').textContent = data.maxTemp;
+                    document.getElementById('current-temp-display').textContent = data.currentTemp;
+                    document.getElementById('temp-control-status').textContent = data.enabled ? 'Enabled' : 'Disabled';
+                })
+                .catch(error => {
+                    console.error('Error loading temperature settings:', error);
+                });
+        }
+
+        function saveTemperatureSettings() {
+            const minTemp = parseInt(document.getElementById('min-temp-slider').value);
+            const maxTemp = parseInt(document.getElementById('max-temp-slider').value);
+            const enabled = document.getElementById('temp-control-toggle').checked;
+            
+            if (minTemp >= maxTemp) {
+                alert('Minimum temperature must be less than maximum temperature!');
+                return;
+            }
+            
+            const settings = {
+                minTemp: minTemp,
+                maxTemp: maxTemp,
+                enabled: enabled
+            };
+            
+            fetch('/temperature/save', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(settings)
+            })
+            .then(response => {
+                if (!response.ok) {
+                    return response.json().then(data => { throw new Error(data.error); });
+                }
+                return response.json();
+            })
+            .then(data => {
+                alert('Temperature settings saved successfully!');
+                loadTemperatureSettings(); // Reload to confirm settings
+            })
+            .catch(error => {
+                alert('Failed to save settings: ' + error.message);
+            });
+        }
+
+        function updateHeaterStatus(isOn) {
+            const statusDot = document.getElementById('heater-status-dot');
+            const statusText = document.getElementById('heater-status');
+            
+            if (statusDot && statusText) {
+                statusDot.className = 'status-dot ' + (isOn ? 'on' : 'off');
+                statusText.textContent = isOn ? 'ON' : 'OFF';
+            }
+        }
+                
+        document.getElementById('min-temp-slider').addEventListener('input', updateTemperatureSliders);
+        document.getElementById('max-temp-slider').addEventListener('input', updateTemperatureSliders);
+        
 
         setInterval(updateTime, 1000);
         setInterval(checkErrorStatus, 2000);
@@ -1947,6 +2385,7 @@ const char mainPage[] PROGMEM = R"html(
         loadSchedules();
         getInitialStates();
         checkErrorStatus();
+        loadTemperatureSettings();
     </script>
 </body>
 </html>
@@ -2131,7 +2570,6 @@ const char logsPage[] PROGMEM = R"html(
             }
         }
 
-        /* Loading animation */
         .loading {
             display: none;
             text-align: center;
@@ -2160,7 +2598,7 @@ const char logsPage[] PROGMEM = R"html(
     </header>
     <div class="container">
         <div class="header-actions">
-            <a href="/" class="button">Back to Dashboard</a>
+            <button onclick="goBack()" class="button">Back to Dashboard</button>
             <button onclick="refreshLogs()" class="button refresh-button">Refresh Logs</button>
         </div>
         <div id="loading" class="loading">
@@ -2210,9 +2648,11 @@ const char logsPage[] PROGMEM = R"html(
             loadLogs();
         }
 
-        // Load logs when page loads
+        function goBack() {
+            window.history.back();
+        }
+
         loadLogs();
-        // Refresh logs every 10 seconds
         setInterval(loadLogs, 10000);
     </script>
 </body>
@@ -2237,11 +2677,19 @@ void emailLoop(void* parameter) {
     if (WiFi.status() != WL_CONNECTED) {
       unsigned long currentMillis = millis();
       if (currentMillis - lastWifiConnectAttempt > WIFI_RECONNECT_INTERVAL) {
-        storeLogEntry("Attempting to reconnect to WiFi...");
+        if (!wifiConnectionErrorLogged) {
+          storeLogEntry("Attempting to reconnect to WiFi...");
+          wifiConnectionErrorLogged = true;
+        }
         WiFi.reconnect();
         lastWifiConnectAttempt = currentMillis;
       }
     } else {
+      if (wifiConnectionErrorLogged) {
+        storeLogEntry("WiFi connection restored");
+        wifiConnectionErrorLogged = false;
+      }
+
       if (!validTimeSync) {
         attemptTimeSync();
       }
@@ -2262,7 +2710,7 @@ void emailLoop(void* parameter) {
         pointemail = false;
       }
     }
-    delay(2600);
+    delay(600);
   }
 }
 
@@ -2274,6 +2722,7 @@ void mainLoop(void* parameter) {
     checkoverride1();
     checkoverride2();
     overrideLEDState();
+    checkTemperatureControl();
 
     if (!validTimeSync && WiFi.status() == WL_CONNECTED) {
       unsigned long currentMillis = millis();
@@ -2333,8 +2782,10 @@ void mainLoop(void* parameter) {
       struct tm timeinfo;
       if (getLocalTime(&timeinfo)) {
         lastNTPSync = millis();
-        storeLogEntry("Regular time sync successful");
-        timeSyncErrorLogged = false;
+        if (timeSyncErrorLogged) {
+          storeLogEntry("Regular time sync successful");
+          timeSyncErrorLogged = false;
+        }
 
         setTime(timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec,
                 timeinfo.tm_mday, timeinfo.tm_mon + 1, timeinfo.tm_year + 1900);
@@ -2516,7 +2967,17 @@ void deactivateRelay(int relayNum, bool manual) {
 }
 
 void broadcastRelayStates() {
-  String message = "{\"relay1\":" + String(relay1State || overrideRelay1) + ",\"relay2\":" + String(relay2State || overrideRelay2) + ",\"relay3\":" + String(relay3State || overrideRelay1) + ",\"temperature\":" + String(lastValidTemperature, 1) + "}";
+  String message = "{\"relay1\":" + String(relay1State || overrideRelay1) + ",\"relay2\":" + String(relay2State || overrideRelay2) + ",\"relay3\":" + String(relay3State || overrideRelay1) + ",\"relay4\":" + String(relay4State) + ",\"temperature\":" + String(lastValidTemperature, 1);
+
+  if (!temperatureData.empty()) {
+    message += ",\"tempControlEnabled\":" + String(temperatureData[0].enabled ? "true" : "false") + ",\"minTemp\":" + String(temperatureData[0].minTemp) + ",\"maxTemp\":" + String(temperatureData[0].maxTemp);
+  }
+
+  message += ",\"relay1Name\":\"WaveMaker\"";
+  message += ",\"relay2Name\":\"Light\"";
+  message += ",\"relay3Name\":\"Air Pump\"";
+  message += ",\"relay4Name\":\"Heater\"}";
+
   webSocket.broadcastTXT(message);
 }
 
@@ -2782,7 +3243,8 @@ void handleRelayStatus() {
   String json = "{";
   json += "\"1\":" + String(relay1State || overrideRelay1) + ",";
   json += "\"2\":" + String(relay2State || overrideRelay2) + ",";
-  json += "\"3\":" + String(relay3State || overrideRelay1) + "}";
+  json += "\"3\":" + String(relay3State || overrideRelay1) + ",";
+  json += "\"4\":" + String(relay4State) + "}";
   server.send(200, "application/json", json);
 }
 
@@ -3032,6 +3494,93 @@ void templaunch() {
       clearError();
       hasTempError = false;
       tempErrorLogged = false;
+    }
+  }
+}
+
+void handleGetTemperatureSettings() {
+  String json = "{";
+  json += "\"minTemp\":" + String(temperatureData[0].minTemp) + ",";
+  json += "\"maxTemp\":" + String(temperatureData[0].maxTemp) + ",";
+  json += "\"enabled\":" + String(temperatureData[0].enabled ? "true" : "false") + ",";
+  json += "\"currentTemp\":" + String(lastValidTemperature, 1);
+  json += "}";
+  server.send(200, "application/json", json);
+}
+
+void handleSaveTemperatureSettings() {
+  if (server.hasArg("plain")) {
+    String body = server.arg("plain");
+    StaticJsonDocument<200> doc;
+    DeserializationError error = deserializeJson(doc, body);
+
+    if (!error) {
+      int minTemp = doc["minTemp"];
+      int maxTemp = doc["maxTemp"];
+      bool enabled = doc["enabled"];
+
+      if (minTemp < maxTemp) {
+        if (temperatureData.empty()) {
+          TemperatureData data;
+          temperatureData.push_back(data);
+        }
+
+        temperatureData[0].minTemp = minTemp;
+        temperatureData[0].maxTemp = maxTemp;
+        temperatureData[0].enabled = enabled;
+
+        saveTemperatureSettings();
+
+        server.send(200, "application/json", "{\"status\":\"success\"}");
+        storeLogEntry("Temperature control settings updated: Min=" + String(minTemp) + "°C, Max=" + String(maxTemp) + "°C, Enabled=" + String(enabled ? "Yes" : "No"));
+        return;
+      } else {
+        server.send(400, "application/json", "{\"error\":\"Minimum temperature must be less than maximum temperature\"}");
+        return;
+      }
+    }
+  }
+  server.send(400, "application/json", "{\"error\":\"Invalid request\"}");
+}
+
+void checkTemperatureControl() {
+  if (temperatureData.empty()) {
+    return;
+  }
+
+  if (!temperatureData[0].enabled) {
+    if (!relay4State) {
+      digitalWrite(relay4, LOW);
+      relay4State = true;
+      storeLogEntry("Heater turned ON - Heater Control Disabled");
+      broadcastRelayStates();
+    }
+    return;
+  }
+
+  if (hasTempError) {
+    if (!relay4State) {
+      digitalWrite(relay4, LOW);
+      relay4State = true;
+      storeLogEntry("Heater turned ON - Temperature sensor failure failsafe activated");
+      broadcastRelayStates();
+    }
+    return;
+  }
+
+  if (lastValidTemperature > temperatureData[0].maxTemp) {
+    if (relay4State) {
+      digitalWrite(relay4, HIGH);
+      relay4State = false;
+      storeLogEntry("Heater turned OFF - Temperature " + String(lastValidTemperature, 1) + "°C above maximum " + String(temperatureData[0].maxTemp) + "°C");
+      broadcastRelayStates();
+    }
+  } else if (lastValidTemperature < temperatureData[0].minTemp) {
+    if (!relay4State) {
+      digitalWrite(relay4, LOW);
+      relay4State = true;
+      storeLogEntry("Heater turned ON - Temperature " + String(lastValidTemperature, 1) + "°C below minimum " + String(temperatureData[0].minTemp) + "°C");
+      broadcastRelayStates();
     }
   }
 }
