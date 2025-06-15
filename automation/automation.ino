@@ -1046,7 +1046,7 @@ void saveTemperatureSettings() {
 void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length) {
   switch (type) {
     case WStype_DISCONNECTED:
-      storeLogEntry("WebSocket " + String(num) + " Disconnected!");
+      //storeLogEntry("WebSocket " + String(num) + " Disconnected!");
       break;
     case WStype_CONNECTED:
       {
@@ -1897,7 +1897,7 @@ const char mainPage[] PROGMEM = R"html(
             
             <div class="slider-container">
                 <label for="min-temp-slider">Minimum Temperature (°C):</label>
-                <input type="range" id="min-temp-slider" min="20" max="30" step="0.5" value="24">
+                <input type="range" id="min-temp-slider" min="20" max="30" step="1" value="24">
                 <div class="current-value">
                     <span id="min-temp-value">24</span> °C
                 </div>
@@ -1909,7 +1909,7 @@ const char mainPage[] PROGMEM = R"html(
             
             <div class="slider-container">
                 <label for="max-temp-slider">Maximum Temperature (°C):</label>
-                <input type="range" id="max-temp-slider" min="20" max="30" step="0.5" value="28">
+                <input type="range" id="max-temp-slider" min="20" max="30" step="1" value="28">
                 <div class="current-value">
                     <span id="max-temp-value">28</span> °C
                 </div>
@@ -2777,26 +2777,6 @@ void mainLoop(void* parameter) {
       }
     }
 
-    if (millis() - lastNTPSync > 43200000) {
-      configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
-      struct tm timeinfo;
-      if (getLocalTime(&timeinfo)) {
-        lastNTPSync = millis();
-        if (timeSyncErrorLogged) {
-          storeLogEntry("Regular time sync successful");
-          timeSyncErrorLogged = false;
-        }
-
-        setTime(timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec,
-                timeinfo.tm_mday, timeinfo.tm_mon + 1, timeinfo.tm_year + 1900);
-      } else {
-        if (!timeSyncErrorLogged) {
-          storeLogEntry("Regular time sync failed.");
-          timeSyncErrorLogged = true;
-        }
-      }
-    }
-
     delay(1);
   }
 }
@@ -3471,6 +3451,7 @@ void handleTemperature() {
         if (!tempErrorLogged) {
           storeLogEntry("Error: Temperature sensor failed " + String(consecutiveTempFailures) + " times");
           tempErrorLogged = true;
+          sendEmailWithLogs("Temperature Sensor Error");
         }
         indicateError();
         hasTempError = true;
