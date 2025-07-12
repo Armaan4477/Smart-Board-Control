@@ -53,6 +53,9 @@ void handleGetTemporarySchedules();
 void handleAddTemporarySchedule();
 void handleDeleteTemporarySchedule();
 void checkTemporarySchedules();
+void handleHeaterCtrlPage();
+void handleTempSchedulesPage();
+void handleSchedulesPage();
 
 struct Schedule {
   int id;
@@ -938,6 +941,9 @@ void setup() {
   server.on("/favicon.png", HTTP_GET, handleFavicon);
   server.on("/logs", HTTP_GET, handleLogsPage);
   server.on("/logs/data", HTTP_GET, handleGetLogs);
+  server.on("/heatercontrol", HTTP_GET, handleHeaterCtrlPage);
+  server.on("/tempschedules", HTTP_GET, handleTempSchedulesPage);
+  server.on("/mainSchedules", HTTP_GET, handleSchedulesPage);
   server.on("/relay/1", HTTP_ANY, handleRelay1);
   server.on("/relay/2", HTTP_ANY, handleRelay2);
   server.on("/relay/3", HTTP_ANY, handleRelay3);
@@ -1204,11 +1210,40 @@ const char mainPage[] PROGMEM = R"html(
             transition: var(--transition);
         }
 
-        .buttons {
+        .control-section {
+            background-color: var(--card-color);
+            padding: 25px;
+            border-radius: var(--border-radius);
+            box-shadow: var(--shadow);
+            margin-bottom: 25px;
+            transition: var(--transition);
+        }
+
+        .control-section:hover {
+            box-shadow: 0 5px 15px rgba(0,0,0,0.15);
+        }
+
+        .control-section h3 {
+            color: var(--primary-color);
+            margin-bottom: 20px;
+            font-size: 1.5rem;
+            border-bottom: 2px solid var(--primary-light);
+            padding-bottom: 10px;
+            text-align: center;
+        }
+
+        .relay-buttons {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
             gap: 15px;
-            margin-bottom: 30px;
+            margin-bottom: 10px;
+        }
+
+        .navigation-buttons {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 10px;
         }
 
         .button {
@@ -1240,6 +1275,1291 @@ const char mainPage[] PROGMEM = R"html(
 
         .button.off {
             background-color: var(--error-color);
+        }
+
+        .nav-button {
+            background-color: var(--accent-color);
+        }
+
+        .nav-button:hover {
+            background-color: #0288D1;
+        }
+
+        .special-button {
+            background-color: var(--warning-color);
+            color: #333;
+        }
+
+        .special-button:hover {
+            background-color: #FFB300;
+        }
+
+        #errorSection {
+            text-align: center;
+            margin: 20px 0;
+            color: white;
+            background-color: var(--error-color);
+            padding: 20px;
+            border-radius: var(--border-radius);
+            display: none;
+            animation: pulse 2s infinite;
+            box-shadow: 0 4px 10px rgba(244, 67, 54, 0.3);
+        }
+
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(244, 67, 54, 0.4); }
+            70% { box-shadow: 0 0 0 10px rgba(244, 67, 54, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(244, 67, 54, 0); }
+        }
+
+        #clearErrorBtn {
+            padding: 12px 24px;
+            background-color: white;
+            color: var(--error-color);
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 1rem;
+            font-weight: 500;
+            margin-top: 15px;
+            transition: var(--transition);
+        }
+
+        #clearErrorBtn:hover {
+            background-color: #f5f5f5;
+            transform: scale(1.05);
+        }
+
+        @media (max-width: 768px) {
+            .relay-buttons {
+                grid-template-columns: 1fr;
+            }
+            
+            .navigation-buttons {
+                grid-template-columns: 1fr;
+            }
+            
+            #time {
+                font-size: 2rem;
+            }
+            
+            #day, #date {
+                font-size: 1.2rem;
+            }
+            
+            .container {
+                padding: 10px;
+            }
+            
+            .control-section {
+                padding: 15px;
+                margin-bottom: 15px;
+            }
+            
+            .control-section h3 {
+                font-size: 1.3rem;
+            }
+        }
+
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Aquarium Control Panel</h1>
+    </header>
+    <div class="container">
+        <div class="time-container">
+            <div id="time">Loading time...</div>
+            <div id="day">Loading day...</div>
+            <div id="date">Loading date...</div>
+        </div>
+        <div id="temperature">Temperature: -- °C</div>
+        
+        <div class="control-section">
+            <h3>Relay Controls</h3>
+            <div class="relay-buttons">
+                <button class="button" onclick="toggleRelay(1)" id="btn1">WaveMaker</button>
+                <button class="button" onclick="toggleRelay(3)" id="btn3">Air Pump</button>
+                <button class="button" onclick="toggleRelay(2)" id="btn2">Light</button>
+                <button class="button special-button" onclick="oneClickLight()" id="btnOneClick">Change Light Color</button>
+            </div>
+        </div>
+
+        <div class="control-section">
+            <h3>System Navigation</h3>
+            <div class="navigation-buttons">
+                <button class="button nav-button" onclick="showSchedules()">Main Schedules</button>
+                <button class="button nav-button" onclick="showTempSchedules()">Temporary Schedules</button>
+                <button class="button nav-button" onclick="showHeaterControl()">Heater Control</button>
+                <button class="button nav-button" onclick="showLogs()">System Logs</button>
+            </div>
+        </div>
+
+        <div id="errorSection">
+            <p>Error detected!</p>
+            <button id="clearErrorBtn" onclick="clearError()">Clear Error</button>
+        </div>
+    </div>
+    <script>
+        let relayStates = {
+            1: false,
+            2: false,
+            3: false
+        };
+
+        let socket = new WebSocket('ws://' + window.location.hostname + ':81/');
+
+        socket.onopen = () => console.log('WebSocket connected');
+        socket.onmessage = (event) => {
+            try {
+                let data = JSON.parse(event.data);
+                
+                if (data.relay1Name) window.relay1Name = data.relay1Name;
+                if (data.relay2Name) window.relay2Name = data.relay2Name;
+                if (data.relay3Name) window.relay3Name = data.relay3Name;
+                if (data.relay4Name) window.relay4Name = data.relay4Name;
+                
+                if (data.relay1 !== undefined) {
+                    relayStates[1] = data.relay1;
+                    updateButtonStyle(1);
+                }
+                if (data.relay2 !== undefined) {
+                    relayStates[2] = data.relay2;
+                    updateButtonStyle(2);
+                }
+                if (data.relay3 !== undefined) {
+                    relayStates[3] = data.relay3;
+                    updateButtonStyle(3);
+                }
+                if (data.relay4 !== undefined) {
+                    updateHeaterStatus(data.relay4);
+                }
+                if (data.temperature !== undefined) {
+                    document.getElementById('temperature').textContent = 
+                        `Temperature: ${data.temperature} °C`;
+                    document.getElementById('current-temp-display').textContent = data.temperature;
+                }
+                if (data.minTemp !== undefined) {
+                    document.getElementById('min-temp-display').textContent = data.minTemp;
+                }
+                if (data.maxTemp !== undefined) {
+                    document.getElementById('max-temp-display').textContent = data.maxTemp;
+                }
+                if (data.tempControlEnabled !== undefined) {
+                    document.getElementById('temp-control-status').textContent = 
+                        data.tempControlEnabled ? 'Enabled' : 'Disabled';
+                }
+            } catch (e) {
+                console.error('WebSocket error:', e);
+            }
+        };
+        socket.onclose = () => checkErrorStatus();
+        socket.onerror = () => checkErrorStatus();
+
+        function updateTime() {
+            fetch('/time')
+                .then(response => response.text())
+                .then(data => {
+                    const [time, day, date] = data.split(' ');
+                    document.getElementById('time').textContent = time;
+                    document.getElementById('day').textContent = day;
+                    document.getElementById('date').textContent = date;
+                })
+                .catch(() => {
+                    document.getElementById('time').textContent = "Time unavailable";
+                    document.getElementById('day').textContent = "Day unavailable";
+                    document.getElementById('date').textContent = "Date unavailable";
+                });
+        }
+
+        function toggleRelay(relay) {
+            fetch('/relay/' + relay, { method: 'POST', headers: { 'Content-Type': 'application/json' } })
+                .then(response => response.ok ? response.json() : response.json().then(data => { throw new Error(data.error); }))
+                .then(data => {
+                    relayStates[relay] = data.state;
+                    updateButtonStyle(relay);
+                })
+                .catch(error => { alert(error.message); checkErrorStatus(); });
+        }
+
+        function updateButtonStyle(relay) {
+            const btn = document.getElementById('btn' + relay);
+            if (btn) {
+                btn.className = 'button ' + (relayStates[relay] ? 'on' : 'off');
+                let relayLabel = "Unknown";
+                
+                if (relay === 1 && window.relay1Name) relayLabel = window.relay1Name;
+                else if (relay === 2 && window.relay2Name) relayLabel = window.relay2Name;
+                else if (relay === 3 && window.relay3Name) relayLabel = window.relay3Name;
+                else if (relay === 1) relayLabel = "WaveMaker";
+                else if (relay === 2) relayLabel = "Light";
+                else if (relay === 3) relayLabel = "Air Pump";
+                
+                btn.textContent = `${relayLabel} (${relayStates[relay] ? 'ON' : 'OFF'})`;
+            }
+        }
+
+        function getInitialStates() {
+            fetch('/relay/status')
+                .then(response => response.json())
+                .then(data => { 
+                    relayStates = data; 
+                    for(let relay in relayStates) updateButtonStyle(relay);
+                    if (data["4"] !== undefined) {
+                        updateHeaterStatus(data["4"]);
+                    }
+                })
+                .catch(() => checkErrorStatus());
+        }
+
+        function checkErrorStatus() {
+            fetch('/error/status')
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('errorSection').style.display = data.hasError ? 'block' : 'none';
+                })
+                .catch(() => {
+                    document.getElementById('errorSection').style.display = 'block';
+                });
+        }
+
+        function clearError() {
+            fetch('/error/clear', { method: 'POST' })
+                .then(response => response.ok ? response.json() : { status: 'error' })
+                .then(data => { if (data.status === 'success') { document.getElementById('errorSection').style.display = 'none'; } else { throw new Error('Failed to clear error'); } })
+                .catch(error => { alert('Failed to clear error: ' + error.message); });
+        }
+
+        function showLogs() {
+            window.location.href = '/logs';
+        }
+        function showHeaterControl() {
+            window.location.href = '/heatercontrol';
+        }
+        function showTempSchedules() {
+            window.location.href = '/tempschedules';
+        }
+        function showSchedules() {
+            window.location.href = '/mainSchedules';
+        }
+
+        function oneClickLight() {
+            fetch('/relay/oneclick', { method: 'POST' })
+            .then(response => response.json().then(data => {
+                if (!response.ok) throw new Error(data.error);
+                alert('Light colour changed successfully.');
+            }))
+            .catch(error => alert(error.message));
+        }
+
+        setInterval(updateTime, 1000);
+        setInterval(checkErrorStatus, 2000);
+        updateTime();
+        getInitialStates();
+        checkErrorStatus();
+    </script>
+</body>
+</html>
+)html";
+
+const char logsPage[] PROGMEM = R"html(
+<!DOCTYPE html>
+<html>
+<head>
+    <link rel="icon" type="image/png" href="/favicon.png">
+    <link rel="shortcut icon" type="image/png" href="/favicon.png">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>System Logs</title>
+    <style>
+        :root {
+            --primary-color: #1976D2;
+            --primary-dark: #0D47A1;
+            --primary-light: #BBDEFB;
+            --accent-color: #03A9F4;
+            --success-color: #4CAF50;
+            --warning-color: #FFC107;
+            --error-color: #F44336;
+            --text-color: #333;
+            --text-light: #757575;
+            --background-color: #f5f7fa;
+            --card-color: #ffffff;
+            --border-radius: 8px;
+            --shadow: 0 2px 10px rgba(0,0,0,0.1);
+            --transition: all 0.3s ease;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--background-color);
+            color: var(--text-color);
+            line-height: 1.6;
+        }
+
+        header {
+            background: linear-gradient(135deg, var(--primary-color), var(--primary-dark));
+            color: white;
+            padding: 20px;
+            text-align: center;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            position: relative;
+            z-index: 10;
+            margin-bottom: 30px;
+        }
+
+        header h1 {
+            margin: 0;
+            font-size: 2rem;
+            letter-spacing: 0.5px;
+        }
+
+        .container {
+            padding: 20px;
+            max-width: 1200px;
+            margin: auto;
+        }
+
+        .logs-table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+            background-color: var(--card-color);
+            box-shadow: var(--shadow);
+            border-radius: var(--border-radius);
+            overflow: hidden;
+            margin-bottom: 30px;
+        }
+
+        .logs-table th, .logs-table td {
+            padding: 15px;
+            text-align: left;
+        }
+
+        .logs-table th {
+            background-color: var(--primary-color);
+            color: white;
+            font-weight: 500;
+        }
+
+        .logs-table tr:nth-child(even) {
+            background-color: #f9f9f9;
+        }
+
+        .logs-table tr {
+            transition: var(--transition);
+            border-bottom: 1px solid #eee;
+        }
+
+        .logs-table tr:last-child {
+            border-bottom: none;
+        }
+
+        .logs-table tr:hover {
+            background-color: #f1f1f1;
+        }
+
+        .button {
+            display: inline-block;
+            padding: 12px 24px;
+            background-color: var(--primary-color);
+            color: white;
+            text-decoration: none;
+            border-radius: var(--border-radius);
+            margin: 5px 0 20px 0;
+            transition: var(--transition);
+            border: none;
+            cursor: pointer;
+            font-size: 1rem;
+            font-weight: 500;
+            box-shadow: var(--shadow);
+            text-align: center;
+        }
+
+        .button:hover {
+            background-color: var(--primary-dark);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 10px rgba(0,0,0,0.15);
+        }
+
+        .button:active {
+            transform: translateY(1px);
+        }
+
+        .refresh-button {
+            float: right;
+            background-color: var(--success-color);
+        }
+
+        .refresh-button:hover {
+            background-color: #388E3C;
+        }
+
+        .header-actions {
+            margin-bottom: 20px;
+            overflow: hidden;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        @media (max-width: 768px) {
+            .logs-table {
+                font-size: 14px;
+            }
+            
+            .logs-table th, .logs-table td {
+                padding: 10px;
+            }
+            
+            .container {
+                padding: 10px;
+            }
+            
+            .header-actions {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            
+            .button {
+                width: 100%;
+                margin: 5px 0;
+                text-align: center;
+            }
+            
+            .refresh-button {
+                float: none;
+            }
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+        }
+
+        .loading-spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid var(--primary-color);
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>System Logs</h1>
+    </header>
+    <div class="container">
+        <div class="header-actions">
+            <button onclick="goBack()" class="button">Back to Dashboard</button>
+            <button onclick="refreshLogs()" class="button refresh-button">Refresh Logs</button>
+        </div>
+        <div id="loading" class="loading">
+            <div class="loading-spinner"></div>
+            <p>Loading logs...</p>
+        </div>
+        <table class="logs-table">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Timestamp</th>
+                    <th>Message</th>
+                </tr>
+            </thead>
+            <tbody id="logsTableBody">
+            </tbody>
+        </table>
+    </div>
+    <script>
+        function loadLogs() {
+            document.getElementById('loading').style.display = 'block';
+            
+            fetch('/logs/data')
+                .then(response => response.json())
+                .then(data => {
+                    const tableBody = document.getElementById('logsTableBody');
+                    tableBody.innerHTML = '';
+                    
+                    if (data.logs && Array.isArray(data.logs)) {
+                        data.logs.reverse().forEach(log => {
+                            const row = tableBody.insertRow();
+                            row.insertCell(0).textContent = log.id;
+                            row.insertCell(1).textContent = log.timestamp;
+                            row.insertCell(2).textContent = log.message;
+                        });
+                    }
+                    
+                    document.getElementById('loading').style.display = 'none';
+                })
+                .catch(error => {
+                    console.error('Error loading logs:', error);
+                    document.getElementById('loading').style.display = 'none';
+                });
+        }
+
+        function refreshLogs() {
+            loadLogs();
+        }
+
+        function goBack() {
+            window.history.back();
+        }
+
+        loadLogs();
+        setInterval(loadLogs, 10000);
+    </script>
+</body>
+</html>
+)html";
+
+const char heaterctrl[] PROGMEM = R"html(
+<!DOCTYPE html>
+<html>
+<head>
+    <link rel="icon" type="image/png" href="/favicon.png">
+    <link rel="shortcut icon" type="image/png" href="/favicon.png">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Heater Control</title>
+    <style>
+        :root {
+            --primary-color: #1976D2;
+            --primary-dark: #0D47A1;
+            --primary-light: #BBDEFB;
+            --accent-color: #03A9F4;
+            --success-color: #4CAF50;
+            --warning-color: #FFC107;
+            --error-color: #F44336;
+            --text-color: #333;
+            --text-light: #757575;
+            --background-color: #f5f7fa;
+            --card-color: #ffffff;
+            --border-radius: 8px;
+            --shadow: 0 2px 10px rgba(0,0,0,0.1);
+            --transition: all 0.3s ease;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--background-color);
+            color: var(--text-color);
+            line-height: 1.6;
+        }
+
+        header {
+            background: linear-gradient(135deg, var(--primary-color), var(--primary-dark));
+            color: white;
+            padding: 20px;
+            text-align: center;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            position: relative;
+            z-index: 10;
+            margin-bottom: 30px;
+        }
+
+        header h1 {
+            margin: 0;
+            font-size: 2rem;
+            letter-spacing: 0.5px;
+        }
+
+        .container {
+            padding: 20px;
+            max-width: 1200px;
+            margin: auto;
+        }
+
+        .button {
+            display: inline-block;
+            padding: 12px 24px;
+            background-color: var(--primary-color);
+            color: white;
+            text-decoration: none;
+            border-radius: var(--border-radius);
+            margin: 5px 0 20px 0;
+            transition: var(--transition);
+            border: none;
+            cursor: pointer;
+            font-size: 1rem;
+            font-weight: 500;
+            box-shadow: var(--shadow);
+            text-align: center;
+        }
+
+        .button:hover {
+            background-color: var(--primary-dark);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 10px rgba(0,0,0,0.15);
+        }
+
+        .button:active {
+            transform: translateY(1px);
+        }
+
+        .header-actions {
+            margin-bottom: 20px;
+            overflow: hidden;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .temp-control {
+            background-color: var(--card-color);
+            padding: 25px;
+            border-radius: var(--border-radius);
+            box-shadow: var(--shadow);
+            margin-bottom: 25px;
+            transition: var(--transition);
+        }
+        
+        .temp-control:hover {
+            box-shadow: 0 5px 15px rgba(0,0,0,0.15);
+        }
+        
+        .temp-control h3 {
+            color: var(--primary-color);
+            margin-bottom: 15px;
+            font-size: 1.5rem;
+            border-bottom: 2px solid var(--primary-light);
+            padding-bottom: 10px;
+        }
+        
+        .temp-control .slider-container {
+            margin: 25px 0;
+        }
+        
+        .temp-control .slider-container label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 500;
+        }
+        
+        .temp-control .range-values {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 10px;
+            color: var(--text-light);
+        }
+        
+        .temp-control .current-value {
+            text-align: center;
+            font-size: 1.2rem;
+            font-weight: bold;
+            color: var(--primary-color);
+            margin: 10px 0;
+        }
+        
+        .temp-control input[type="range"] {
+            width: 100%;
+            height: 8px;
+            border-radius: 5px;
+            background: #ddd;
+            outline: none;
+            -webkit-appearance: none;
+        }
+        
+        .temp-control input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: var(--primary-color);
+            cursor: pointer;
+            transition: var(--transition);
+        }
+        
+        .temp-control input[type="range"]::-webkit-slider-thumb:hover {
+            background: var(--primary-dark);
+            transform: scale(1.1);
+        }
+        
+        .temp-control .toggle-container {
+            display: flex;
+            align-items: center;
+            margin: 20px 0;
+        }
+        
+        .temp-control .toggle-switch {
+            position: relative;
+            display: inline-block;
+            width: 60px;
+            height: 34px;
+            margin-right: 15px;
+        }
+        
+        .temp-control .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        
+        .temp-control .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #ccc;
+            transition: .4s;
+            border-radius: 34px;
+        }
+        
+        .temp-control .slider:before {
+            position: absolute;
+            content: "";
+            height: 26px;
+            width: 26px;
+            left: 4px;
+            bottom: 4px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+        }
+        
+        .temp-control input:checked + .slider {
+            background-color: var(--success-color);
+        }
+        
+        .temp-control input:focus + .slider {
+            box-shadow: 0 0 1px var(--success-color);
+        }
+        
+        .temp-control input:checked + .slider:before {
+            transform: translateX(26px);
+        }
+        
+        .temp-control .toggle-label {
+            font-size: 1rem;
+            font-weight: 500;
+        }
+        
+        .temp-control .temp-buttons {
+            display: flex;
+            justify-content: flex-end;
+        }
+        
+        .temp-control .save-button {
+            padding: 10px 20px;
+            background-color: var(--primary-color);
+            color: white;
+            border: none;
+            border-radius: var(--border-radius);
+            cursor: pointer;
+            transition: var(--transition);
+            font-weight: 500;
+        }
+        
+        .temp-control .save-button:hover {
+            background-color: var(--primary-dark);
+            transform: translateY(-2px);
+        }
+        
+        .temp-control .temp-values-display {
+            display: flex;
+            justify-content: space-between;
+            margin: 20px 0;
+            font-size: 1.1rem;
+            gap: 10px;
+        }
+        
+        .temp-control .temp-value-box {
+            text-align: center;
+            padding: 15px;
+            background-color: #f5f7fa;
+            border-radius: var(--border-radius);
+            flex: 1;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+            min-width: 0;
+        }
+        
+        .temp-control .temp-value-box span {
+            font-weight: bold;
+            color: var(--primary-color);
+            font-size: 1.2rem;
+        }
+        
+        .temp-control .temp-value-box.min-temp {
+            border-left: 4px solid var(--warning-color);
+        }
+        
+        .temp-control .temp-value-box.max-temp {
+            border-left: 4px solid var(--error-color);
+        }
+        
+        .temp-control .temp-value-box.current-temp {
+            border-left: 4px solid var(--success-color);
+        }
+
+        .temp-control .heater-status {
+            margin: 20px 0;
+            padding: 15px;
+            background-color: #f5f7fa;
+            border-radius: var(--border-radius);
+            border-left: 4px solid var(--primary-color);
+        }
+
+        .temp-control .status-indicator {
+            display: flex;
+            align-items: center;
+        }
+
+        .temp-control .status-dot {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 10px;
+            background-color: #ccc;
+        }
+
+        .temp-control .status-dot.on {
+            background-color: var(--success-color);
+            box-shadow: 0 0 5px var(--success-color);
+        }
+
+        .temp-control .status-dot.off {
+            background-color: var(--error-color);
+            box-shadow: 0 0 5px var(--error-color);
+        }
+
+        .temp-control .status-text {
+            font-size: 1.1rem;
+            font-weight: 500;
+        }
+
+        #temperature {
+            font-size: 2rem;
+            margin: 20px 0;
+            text-align: center;
+            padding: 20px;
+            background-color: var(--card-color);
+            border-radius: var(--border-radius);
+            box-shadow: var(--shadow);
+            color: var(--primary-color);
+            transition: var(--transition);
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                padding: 10px;
+            }
+            
+            .header-actions {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            
+            .button {
+                width: 100%;
+                margin: 5px 0;
+                text-align: center;
+            }
+            
+            .temp-control {
+                padding: 15px;
+            }
+            
+            .temp-control .temp-values-display {
+                flex-direction: column;
+                gap: 10px;
+                margin: 15px 0;
+            }
+            
+            .temp-control .temp-value-box {
+                padding: 12px;
+                font-size: 1rem;
+            }
+            
+            .temp-control .temp-value-box span {
+                font-size: 1.1rem;
+            }
+            
+            .temp-control h3 {
+                font-size: 1.3rem;
+            }
+            
+            .temp-control .toggle-container {
+                flex-wrap: wrap;
+                gap: 10px;
+            }
+            
+            .temp-control .toggle-switch {
+                margin-right: 0;
+            }
+            
+            .temp-control .save-button {
+                width: 100%;
+                padding: 12px;
+            }
+            
+            #temperature {
+                font-size: 1.5rem;
+                padding: 15px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Heater Control</h1>
+    </header>
+    <div class="container">
+        <div class="header-actions">
+            <button onclick="goBack()" class="button">Back to Dashboard</button>
+        </div>
+        <div class="temp-control">
+            <h3>Heater Control</h3>
+
+            <div class="heater-status">
+                <div class="status-indicator">
+                    <span class="status-dot" id="heater-status-dot"></span>
+                    <span class="status-text">Heater Status: <span id="heater-status">Unknown</span></span>
+                </div>
+            </div>
+            <div class="temp-values-display">
+                <div class="temp-value-box current-temp">
+                    <div>Current Temperature</div>
+                    <span id="current-temp-display">--</span> °C
+                </div>
+                <div class="temp-value-box min-temp">
+                    <div>Min Temperature</div>
+                    <span id="min-temp-display">--</span> °C
+                </div>
+                <div class="temp-value-box max-temp">
+                    <div>Max Temperature</div>
+                    <span id="max-temp-display">--</span> °C
+                </div>
+            </div>
+            
+            <div class="slider-container">
+                <label for="min-temp-slider">Minimum Temperature (°C):</label>
+                <input type="range" id="min-temp-slider" min="20" max="30" step="1" value="24">
+                <div class="current-value">
+                    <span id="min-temp-value">24</span> °C
+                </div>
+                <div class="range-values">
+                    <span>20°C</span>
+                    <span>30°C</span>
+                </div>
+            </div>
+            
+            <div class="slider-container">
+                <label for="max-temp-slider">Maximum Temperature (°C):</label>
+                <input type="range" id="max-temp-slider" min="20" max="30" step="1" value="28">
+                <div class="current-value">
+                    <span id="max-temp-value">28</span> °C
+                </div>
+                <div class="range-values">
+                    <span>20°C</span>
+                    <span>30°C</span>
+                </div>
+            </div>
+            
+            <div class="toggle-container">
+                <label class="toggle-switch">
+                    <input type="checkbox" id="temp-control-toggle">
+                    <span class="slider"></span>
+                </label>
+                <div class="toggle-label">Temperature Control: <span id="temp-control-status">Unknown</span></div>
+            </div>
+            
+            <div class="temp-buttons">
+                <button class="save-button" onclick="saveTemperatureSettings()">Save Settings</button>
+            </div>
+        </div>
+    </div>
+    <script>
+        let socket = new WebSocket('ws://' + window.location.hostname + ':81/');
+
+        socket.onopen = () => {
+            console.log('WebSocket connected');
+            // Request initial data
+            loadTemperatureSettings();
+        };
+        
+        socket.onmessage = (event) => {
+            try {
+                let data = JSON.parse(event.data);
+                
+                if (data.relay4 !== undefined) {
+                    updateHeaterStatus(data.relay4);
+                }
+                if (data.temperature !== undefined) {
+                    document.getElementById('temperature').textContent = 
+                        `Temperature: ${data.temperature} °C`;
+                    document.getElementById('current-temp-display').textContent = data.temperature;
+                }
+                if (data.minTemp !== undefined) {
+                    document.getElementById('min-temp-display').textContent = data.minTemp;
+                }
+                if (data.maxTemp !== undefined) {
+                    document.getElementById('max-temp-display').textContent = data.maxTemp;
+                }
+                if (data.tempControlEnabled !== undefined) {
+                    document.getElementById('temp-control-status').textContent = 
+                        data.tempControlEnabled ? 'Enabled' : 'Disabled';
+                }
+            } catch (e) {
+                console.error('WebSocket error:', e);
+            }
+        };
+
+        socket.onclose = () => console.log('WebSocket disconnected');
+        socket.onerror = () => console.log('WebSocket error');
+
+        function goBack() {
+            window.history.back();
+        }
+
+        function updateTemperatureSliders() {
+            document.getElementById('min-temp-value').textContent = document.getElementById('min-temp-slider').value;
+            document.getElementById('max-temp-value').textContent = document.getElementById('max-temp-slider').value;
+        }
+
+        function loadTemperatureSettings() {
+            fetch('/temperature/settings')
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('min-temp-slider').value = data.minTemp;
+                    document.getElementById('max-temp-slider').value = data.maxTemp;
+                    document.getElementById('temp-control-toggle').checked = data.enabled;
+                    
+                    // Update display values
+                    document.getElementById('min-temp-value').textContent = data.minTemp;
+                    document.getElementById('max-temp-value').textContent = data.maxTemp;
+                    document.getElementById('min-temp-display').textContent = data.minTemp;
+                    document.getElementById('max-temp-display').textContent = data.maxTemp;
+                    document.getElementById('current-temp-display').textContent = data.currentTemp;
+                    document.getElementById('temp-control-status').textContent = data.enabled ? 'Enabled' : 'Disabled';
+                })
+                .catch(error => {
+                    console.error('Error loading temperature settings:', error);
+                });
+        }
+
+        function saveTemperatureSettings() {
+            const minTemp = parseInt(document.getElementById('min-temp-slider').value);
+            const maxTemp = parseInt(document.getElementById('max-temp-slider').value);
+            const enabled = document.getElementById('temp-control-toggle').checked;
+            
+            if (minTemp >= maxTemp) {
+                alert('Minimum temperature must be less than maximum temperature!');
+                return;
+            }
+            
+            const settings = {
+                minTemp: minTemp,
+                maxTemp: maxTemp,
+                enabled: enabled
+            };
+            
+            fetch('/temperature/save', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(settings)
+            })
+            .then(response => {
+                if (!response.ok) {
+                    return response.json().then(data => { throw new Error(data.error); });
+                }
+                return response.json();
+            })
+            .then(data => {
+                alert('Temperature settings saved successfully!');
+                loadTemperatureSettings(); // Reload to confirm settings
+            })
+            .catch(error => {
+                alert('Failed to save settings: ' + error.message);
+            });
+        }
+
+        function updateHeaterStatus(isOn) {
+            const statusDot = document.getElementById('heater-status-dot');
+            const statusText = document.getElementById('heater-status');
+            
+            if (statusDot && statusText) {
+                statusDot.className = 'status-dot ' + (isOn ? 'on' : 'off');
+                statusText.textContent = isOn ? 'ON' : 'OFF';
+            }
+        }
+
+        function getInitialHeaterStatus() {
+            fetch('/relay/status')
+                .then(response => response.json())
+                .then(data => {
+                    if (data["4"] !== undefined) {
+                        updateHeaterStatus(data["4"]);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error getting initial heater status:', error);
+                });
+        }
+                
+        document.getElementById('min-temp-slider').addEventListener('input', updateTemperatureSliders);
+        document.getElementById('max-temp-slider').addEventListener('input', updateTemperatureSliders);
+
+        loadTemperatureSettings();
+        getInitialHeaterStatus();
+        
+        setInterval(loadTemperatureSettings, 10000);
+        setInterval(getInitialHeaterStatus, 5000);
+    </script>
+</body>
+</html>
+)html";
+
+const char tempschedules[] PROGMEM = R"html(
+<!DOCTYPE html>
+<html>
+<head>
+    <link rel="icon" type="image/png" href="/favicon.png">
+    <link rel="shortcut icon" type="image/png" href="/favicon.png">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Temporary Schedules</title>
+    <style>
+        :root {
+            --primary-color: #1976D2;
+            --primary-dark: #0D47A1;
+            --primary-light: #BBDEFB;
+            --accent-color: #03A9F4;
+            --success-color: #4CAF50;
+            --warning-color: #FFC107;
+            --error-color: #F44336;
+            --text-color: #333;
+            --text-light: #757575;
+            --background-color: #f5f7fa;
+            --card-color: #ffffff;
+            --border-radius: 8px;
+            --shadow: 0 2px 10px rgba(0,0,0,0.1);
+            --transition: all 0.3s ease;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--background-color);
+            color: var(--text-color);
+            line-height: 1.6;
+        }
+
+        header {
+            background: linear-gradient(135deg, var(--primary-color), var(--primary-dark));
+            color: white;
+            padding: 20px;
+            text-align: center;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            position: relative;
+            z-index: 10;
+            margin-bottom: 30px;
+        }
+
+        header h1 {
+            margin: 0;
+            font-size: 2rem;
+            letter-spacing: 0.5px;
+        }
+
+        .container {
+            padding: 20px;
+            max-width: 1200px;
+            margin: auto;
+        }
+
+        .temp-schedule-form {
+            background-color: var(--card-color);
+            padding: 25px;
+            border-radius: var(--border-radius);
+            box-shadow: var(--shadow);
+            margin-bottom: 25px;
+            transition: var(--transition);
+        }
+
+        .temp-schedule-form:hover {
+            box-shadow: 0 5px 15px rgba(0,0,0,0.15);
+        }
+
+        .loading-message {
+            text-align: center;
+            padding: 20px;
+            color: var(--text-light);
+            font-style: italic;
+        }
+
+        .button {
+            display: inline-block;
+            padding: 12px 24px;
+            background-color: var(--primary-color);
+            color: white;
+            text-decoration: none;
+            border-radius: var(--border-radius);
+            margin: 5px 0 20px 0;
+            transition: var(--transition);
+            border: none;
+            cursor: pointer;
+            font-size: 1rem;
+            font-weight: 500;
+            box-shadow: var(--shadow);
+            text-align: center;
+        }
+
+        .button:hover {
+            background-color: var(--primary-dark);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 10px rgba(0,0,0,0.15);
+        }
+
+        .button:active {
+            transform: translateY(1px);
+        }
+
+        .header-actions {
+            margin-bottom: 20px;
+            overflow: hidden;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
         }
 
         .card {
@@ -1647,8 +2967,303 @@ const char mainPage[] PROGMEM = R"html(
                 font-size: 0.8rem;
                 min-width: 80px;
             }
+
+            .container {
+                padding: 10px;
+            }
+            
+            .header-actions {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            
+            .button {
+                width: 100%;
+                margin: 5px 0;
+                text-align: center;
+            }
         }
-        .temp-control {
+
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Temporary Schedules</h1>
+    </header>
+    <div class="container">
+        <div class="header-actions">
+            <button onclick="goBack()" class="button">Back to Dashboard</button>
+        </div>
+
+        <div class="schedule-form">
+            <h3>Add Temporary Schedule (One-time only)</h3>
+            <label for="tempRelaySelect">Select Relay:</label>
+            <select id="tempRelaySelect">
+                <option value="" disabled selected>Select Relay</option>
+                <option value="1">WaveMaker</option>
+                <option value="2">Light</option>
+                <option value="3">Air Pump</option>
+            </select>
+            <div id="tempRelayError" class="error">Please select a relay.</div>
+
+            <label for="tempOnTime">Start Time (optional):</label>
+            <input type="time" id="tempOnTime" placeholder="On Time">
+
+            <label for="tempOffTime">End Time (optional):</label>
+            <input type="time" id="tempOffTime" placeholder="Off Time">
+            <div id="tempTimeError" class="error">Please enter at least start time or end time.</div>
+
+            <button id="addTempScheduleBtn" onclick="addTemporarySchedule()">Add Temporary Schedule</button>
+        </div>
+
+        <div class="card">
+            <h3>Active Temporary Schedules</h3>
+            <table class="schedule-table" id="tempScheduleTable">
+                <tr>
+                    <th>ID</th>
+                    <th>Relay</th>
+                    <th>Start Time</th>
+                    <th>End Time</th>
+                    <th>Action</th>
+                </tr>
+            </table>
+        </div>
+    </div>
+    <script>
+    function goBack() {
+        window.history.back();
+    }
+
+    function addTemporarySchedule() {
+        document.getElementById('tempRelayError').style.display = 'none';
+        document.getElementById('tempTimeError').style.display = 'none';
+
+        const relay = document.getElementById('tempRelaySelect').value;
+        const onTime = document.getElementById('tempOnTime').value;
+        const offTime = document.getElementById('tempOffTime').value;
+        
+        let hasError = false;
+
+        if (relay === "") {
+            document.getElementById('tempRelayError').style.display = 'block';
+            hasError = true;
+        }
+        
+        if (!onTime && !offTime) {
+            document.getElementById('tempTimeError').style.display = 'block';
+            hasError = true;
+        }
+        
+        if (hasError) {
+            return;
+        }
+
+        let requestBody = { relay };
+        if (onTime) requestBody.onTime = onTime;
+        if (offTime) requestBody.offTime = offTime;
+
+        fetch('/temp-schedule/add', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(requestBody)
+        })
+        .then(response => response.ok ? response.json() : response.json().then(data => { throw new Error(data.error); }))
+        .then(() => { 
+            loadTemporarySchedules(); 
+            checkErrorStatus(); 
+            document.getElementById('tempRelaySelect').value = '';
+            document.getElementById('tempOnTime').value = '';
+            document.getElementById('tempOffTime').value = '';
+            alert('Temporary schedule added successfully!');
+        })
+        .catch(error => { 
+            alert('Failed to add temporary schedule: ' + error.message); 
+            checkErrorStatus(); 
+        });
+    }
+
+    function deleteTemporarySchedule(id) {
+        fetch('/temp-schedule/delete?id=' + id, { method: 'DELETE', headers: { 'Content-Type': 'application/json' } })
+            .then(response => response.ok ? response.json() : { status: 'error' })
+            .then(data => { 
+                if (data.status === 'success') { 
+                    loadTemporarySchedules(); 
+                    checkErrorStatus(); 
+                } else { 
+                    throw new Error('Failed to delete temporary schedule'); 
+                } 
+            })
+            .catch(error => { 
+                alert('Failed to delete temporary schedule: ' + error.message); 
+                checkErrorStatus(); 
+            });
+    }
+
+    function loadTemporarySchedules() {
+        fetch('/temp-schedules')
+            .then(response => response.json())
+            .then(schedules => {
+                const table = document.getElementById('tempScheduleTable');
+                table.innerHTML = `<tr>
+                    <th>ID</th>
+                    <th>Relay</th>
+                    <th>Start Time</th>
+                    <th>End Time</th>
+                    <th>Action</th>
+                </tr>`;
+                
+                schedules.forEach(schedule => {
+                    const row = table.insertRow();
+                    let relayName = "Unknown";
+                    if (schedule.relay == 1) relayName = "WaveMaker";
+                    else if (schedule.relay == 2) relayName = "Light";
+                    else if (schedule.relay == 3) relayName = "Air Pump";
+                    
+                    row.insertCell(0).textContent = schedule.id;
+                    row.insertCell(1).textContent = relayName;
+                    
+                    let startTime = schedule.hasOnTime ? 
+                        `${String(schedule.onHour).padStart(2, '0')}:${String(schedule.onMinute).padStart(2, '0')}` : 
+                        'Not set';
+                    row.insertCell(2).textContent = startTime;
+                    
+                    let endTime = schedule.hasOffTime ? 
+                        `${String(schedule.offHour).padStart(2, '0')}:${String(schedule.offMinute).padStart(2, '0')}` : 
+                        'Not set';
+                    row.insertCell(3).textContent = endTime;
+                    
+                    const actionCell = row.insertCell(4);
+                    const deleteBtn = document.createElement('button');
+                    deleteBtn.textContent = 'Delete';
+                    deleteBtn.className = 'action-button delete';
+                    deleteBtn.onclick = () => deleteTemporarySchedule(schedule.id);
+                    actionCell.appendChild(deleteBtn);
+                });
+            })
+            .catch(() => checkErrorStatus());
+    }
+
+    function checkErrorStatus() {
+        fetch('/error/status')
+            .then(response => response.json())
+            .then(data => {
+                console.log('Error status checked:', data.hasError);
+            })
+            .catch(() => {
+                console.log('Failed to check error status');
+            });
+    }
+
+    loadTemporarySchedules();
+    setInterval(loadTemporarySchedules, 5000);
+</script>
+</body>
+</html>
+)html";
+
+const char mainSchedules[] PROGMEM = R"html(
+<!DOCTYPE html>
+<html>
+<head>
+    <link rel="icon" type="image/png" href="/favicon.png">
+    <link rel="shortcut icon" type="image/png" href="/favicon.png">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Schedules</title>
+    <style>
+        :root {
+            --primary-color: #1976D2;
+            --primary-dark: #0D47A1;
+            --primary-light: #BBDEFB;
+            --accent-color: #03A9F4;
+            --success-color: #4CAF50;
+            --warning-color: #FFC107;
+            --error-color: #F44336;
+            --text-color: #333;
+            --text-light: #757575;
+            --background-color: #f5f7fa;
+            --card-color: #ffffff;
+            --border-radius: 8px;
+            --shadow: 0 2px 10px rgba(0,0,0,0.1);
+            --transition: all 0.3s ease;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--background-color);
+            color: var(--text-color);
+            line-height: 1.6;
+        }
+
+        header {
+            background: linear-gradient(135deg, var(--primary-color), var(--primary-dark));
+            color: white;
+            padding: 20px;
+            text-align: center;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            position: relative;
+            z-index: 10;
+            margin-bottom: 30px;
+        }
+
+        header h1 {
+            margin: 0;
+            font-size: 2rem;
+            letter-spacing: 0.5px;
+        }
+
+        .container {
+            padding: 20px;
+            max-width: 1200px;
+            margin: auto;
+        }
+
+        .button {
+            display: inline-block;
+            padding: 12px 24px;
+            background-color: var(--primary-color);
+            color: white;
+            text-decoration: none;
+            border-radius: var(--border-radius);
+            margin: 5px 0 20px 0;
+            transition: var(--transition);
+            border: none;
+            cursor: pointer;
+            font-size: 1rem;
+            font-weight: 500;
+            box-shadow: var(--shadow);
+            text-align: center;
+        }
+
+        .button:hover {
+            background-color: var(--primary-dark);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 10px rgba(0,0,0,0.15);
+        }
+
+        .button:active {
+            transform: translateY(1px);
+        }
+
+        .header-actions {
+            margin-bottom: 20px;
+            overflow: hidden;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .schedule-form, .log-section {
             background-color: var(--card-color);
             padding: 25px;
             border-radius: var(--border-radius);
@@ -1656,302 +3271,404 @@ const char mainPage[] PROGMEM = R"html(
             margin-bottom: 25px;
             transition: var(--transition);
         }
-        
-        .temp-control:hover {
+
+        .schedule-form:hover, .log-section:hover {
             box-shadow: 0 5px 15px rgba(0,0,0,0.15);
         }
-        
-        .temp-control h3 {
+
+        .schedule-form h3, .log-section h3 {
             color: var(--primary-color);
             margin-bottom: 15px;
             font-size: 1.5rem;
             border-bottom: 2px solid var(--primary-light);
             padding-bottom: 10px;
         }
-        
-        .temp-control .slider-container {
-            margin: 25px 0;
-        }
-        
-        .temp-control .slider-container label {
+
+        .schedule-form label {
             display: block;
             margin-bottom: 8px;
             font-weight: 500;
+            color: var(--text-color);
         }
-        
-        .temp-control .range-values {
-            display: flex;
-            justify-content: space-between;
-            margin-top: 10px;
-            color: var(--text-light);
-        }
-        
-        .temp-control .current-value {
-            text-align: center;
-            font-size: 1.2rem;
-            font-weight: bold;
-            color: var(--primary-color);
-            margin: 10px 0;
-        }
-        
-        .temp-control input[type="range"] {
+
+        .schedule-form input, .schedule-form select {
             width: 100%;
-            height: 8px;
-            border-radius: 5px;
-            background: #ddd;
-            outline: none;
-            -webkit-appearance: none;
-        }
-        
-        .temp-control input[type="range"]::-webkit-slider-thumb {
-            -webkit-appearance: none;
-            appearance: none;
-            width: 20px;
-            height: 20px;
-            border-radius: 50%;
-            background: var(--primary-color);
-            cursor: pointer;
+            padding: 12px;
+            margin: 8px 0 20px 0;
+            border-radius: var(--border-radius);
+            border: 1px solid #ddd;
+            font-size: 1rem;
             transition: var(--transition);
         }
-        
-        .temp-control input[type="range"]::-webkit-slider-thumb:hover {
-            background: var(--primary-dark);
-            transform: scale(1.1);
+
+        .schedule-form input:focus, .schedule-form select:focus {
+            outline: none;
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 3px var(--primary-light);
         }
-        
-        .temp-control .toggle-container {
-            display: flex;
-            align-items: center;
-            margin: 20px 0;
-        }
-        
-        .temp-control .toggle-switch {
-            position: relative;
-            display: inline-block;
-            width: 60px;
-            height: 34px;
-            margin-right: 15px;
-        }
-        
-        .temp-control .toggle-switch input {
-            opacity: 0;
-            width: 0;
-            height: 0;
-        }
-        
-        .temp-control .slider {
-            position: absolute;
+
+        .schedule-form select {
+            appearance: none;
+            background-color: #fff;
+            background-image: url('data:image/svg+xml;utf8,<svg fill="%23333" height="24" viewBox="0 0 24 24" width="24" xmlns="http://www.w3.org/2000/svg"><path d="M7 10l5 5 5-5z"/><path d="M0 0h24v24H0z" fill="none"/></svg>');
+            background-repeat: no-repeat;
+            background-position: right 10px center;
+            padding-right: 40px;
             cursor: pointer;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background-color: #ccc;
-            transition: .4s;
-            border-radius: 34px;
         }
-        
-        .temp-control .slider:before {
-            position: absolute;
-            content: "";
-            height: 26px;
-            width: 26px;
-            left: 4px;
-            bottom: 4px;
-            background-color: white;
-            transition: .4s;
-            border-radius: 50%;
-        }
-        
-        .temp-control input:checked + .slider {
-            background-color: var(--success-color);
-        }
-        
-        .temp-control input:focus + .slider {
-            box-shadow: 0 0 1px var(--success-color);
-        }
-        
-        .temp-control input:checked + .slider:before {
-            transform: translateX(26px);
-        }
-        
-        .temp-control .toggle-label {
-            font-size: 1rem;
-            font-weight: 500;
-        }
-        
-        .temp-control .temp-buttons {
-            display: flex;
-            justify-content: flex-end;
-        }
-        
-        .temp-control .save-button {
-            padding: 10px 20px;
+
+        .schedule-form button {
+            width: 100%;
+            padding: 12px;
             background-color: var(--primary-color);
             color: white;
             border: none;
             border-radius: var(--border-radius);
+            font-size: 1.1rem;
             cursor: pointer;
             transition: var(--transition);
-            font-weight: 500;
+            margin-top: 10px;
         }
-        
-        .temp-control .save-button:hover {
+
+        .schedule-form button:hover {
             background-color: var(--primary-dark);
             transform: translateY(-2px);
+            box-shadow: 0 4px 10px rgba(0,0,0,0.15);
         }
-        
-        .temp-control .temp-values-display {
-            display: flex;
-            justify-content: space-between;
-            margin: 20px 0;
-            font-size: 1.1rem;
+
+        .schedule-form button:active {
+            transform: translateY(1px);
         }
-        
-        .temp-control .temp-value-box {
+
+        .schedule-table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+            margin-top: 20px;
+            overflow: hidden;
+            border-radius: var(--border-radius);
+            box-shadow: var(--shadow);
+        }
+
+        .schedule-table th, .schedule-table td {
+            padding: 15px;
             text-align: center;
-            padding: 15px;
-            background-color: #f5f7fa;
-            border-radius: var(--border-radius);
-            flex: 1;
-            margin: 0 5px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.05);
-        }
-        
-        .temp-control .temp-value-box span {
-            font-weight: bold;
-            color: var(--primary-color);
-        }
-        
-        .temp-control .temp-value-box.min-temp {
-            border-left: 4px solid var(--warning-color);
-        }
-        
-        .temp-control .temp-value-box.max-temp {
-            border-left: 4px solid var(--error-color);
-        }
-        
-        .temp-control .temp-value-box.current-temp {
-            border-left: 4px solid var(--success-color);
         }
 
-        .temp-control .heater-status {
+        .schedule-table th {
+            background-color: var(--primary-color);
+            color: white;
+            font-weight: 500;
+        }
+
+        .schedule-table th:first-child {
+            border-top-left-radius: var(--border-radius);
+        }
+
+        .schedule-table th:last-child {
+            border-top-right-radius: var(--border-radius);
+        }
+
+        .schedule-table tr:last-child td:first-child {
+            border-bottom-left-radius: var(--border-radius);
+        }
+
+        .schedule-table tr:last-child td:last-child {
+            border-bottom-right-radius: var(--border-radius);
+        }
+
+        .schedule-table tr:nth-child(even) {
+            background-color: #f9f9f9;
+        }
+
+        .schedule-table tr {
+            background-color: white;
+            transition: var(--transition);
+        }
+
+        .schedule-table tr:hover {
+            background-color: #f1f1f1;
+        }
+
+        .schedule-table td {
+            border-bottom: 1px solid #eee;
+        }
+
+        .action-button {
+            min-width: 100px;
+            padding: 8px 12px;
+            margin: 5px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            font-weight: 500;
+            transition: var(--transition);
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+
+        .action-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+        }
+
+        .action-button:active {
+            transform: translateY(1px);
+        }
+
+        .action-button.activate {
+            background-color: var(--success-color);
+            color: white;
+        }
+
+        .action-button.deactivate {
+            background-color: var(--warning-color);
+            color: #333;
+        }
+
+        .action-button.delete {
+            background-color: var(--error-color);
+            color: white;
+        }
+
+        #errorSection {
+            text-align: center;
             margin: 20px 0;
-            padding: 15px;
-            background-color: #f5f7fa;
+            color: white;
+            background-color: var(--error-color);
+            padding: 20px;
             border-radius: var(--border-radius);
-            border-left: 4px solid var(--primary-color);
+            display: none;
+            animation: pulse 2s infinite;
+            box-shadow: 0 4px 10px rgba(244, 67, 54, 0.3);
         }
 
-        .temp-control .status-indicator {
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(244, 67, 54, 0.4); }
+            70% { box-shadow: 0 0 0 10px rgba(244, 67, 54, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(244, 67, 54, 0); }
+        }
+
+        #clearErrorBtn {
+            padding: 12px 24px;
+            background-color: white;
+            color: var(--error-color);
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 1rem;
+            font-weight: 500;
+            margin-top: 15px;
+            transition: var(--transition);
+        }
+
+        #clearErrorBtn:hover {
+            background-color: #f5f5f5;
+            transform: scale(1.05);
+        }
+
+        #logSection {
+            display: none;
+        }
+
+        pre {
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: var(--border-radius);
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: 'Consolas', 'Monaco', monospace;
+            border: 1px solid #eee;
+            white-space: pre-wrap;
+        }
+
+        .error {
+            color: var(--error-color);
+            display: none;
+            margin-top: -15px;
+            margin-bottom: 12px;
+            font-size: 0.9rem;
+            transition: var(--transition);
+        }
+
+        .error2 {
+            color: var(--error-color);
+            display: none;
+            margin-top: 2px;
+            margin-bottom: 12px;
+            font-size: 0.9rem;
+            transition: var(--transition);
+        }
+
+        .ready {
+            background-color: var(--success-color);
+            cursor: pointer;
+        }
+
+        #successDialog {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 50%;
+            top: 50%;
+            transform: translate(-50%, -50%);
+            background-color: var(--success-color);
+            color: white;
+            padding: 25px;
+            border-radius: var(--border-radius);
+            box-shadow: 0 5px 20px rgba(0,0,0,0.3);
+            text-align: center;
+            min-width: 300px;
+            animation: fadeIn 0.3s ease-out;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translate(-50%, -60%); }
+            to { opacity: 1; transform: translate(-50%, -50%); }
+        }
+
+        #successDialog p {
+            font-size: 1.2rem;
+            margin-bottom: 15px;
+        }
+
+        #successDialog button {
+            margin-top: 15px;
+            padding: 10px 25px;
+            background-color: white;
+            color: var(--success-color);
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 1rem;
+            font-weight: 500;
+            transition: var(--transition);
+        }
+
+        #successDialog button:hover {
+            background-color: #f5f5f5;
+            transform: scale(1.05);
+        }
+
+        .day-checkboxes {
             display: flex;
-            align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-bottom: 20px;
         }
 
-        .temp-control .status-dot {
-            display: inline-block;
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            margin-right: 10px;
+        .day-checkboxes label {
+            display: inline-flex;
+            align-items: center;
+            position: relative;
+            padding-left: 30px;
+            cursor: pointer;
+            font-size: 1rem;
+            user-select: none;
+            margin-right: 15px;
+            margin-bottom: 5px;
+        }
+
+        .day-checkboxes input {
+            position: absolute;
+            opacity: 0;
+            cursor: pointer;
+            height: 0;
+            width: 0;
+        }
+
+        .day-checkboxes .checkmark {
+            position: absolute;
+            top: 0;
+            left: 0;
+            height: 20px;
+            width: 20px;
+            background-color: #eee;
+            border-radius: 4px;
+            transition: var(--transition);
+        }
+
+        .day-checkboxes label:hover input ~ .checkmark {
             background-color: #ccc;
         }
 
-        .temp-control .status-dot.on {
-            background-color: var(--success-color);
-            box-shadow: 0 0 5px var(--success-color);
+        .day-checkboxes input:checked ~ .checkmark {
+            background-color: var(--primary-color);
         }
 
-        .temp-control .status-dot.off {
-            background-color: var(--error-color);
-            box-shadow: 0 0 5px var(--error-color);
+        .day-checkboxes .checkmark:after {
+            content: "";
+            position: absolute;
+            display: none;
+            left: 7px;
+            top: 3px;
+            width: 5px;
+            height: 10px;
+            border: solid white;
+            border-width: 0 2px 2px 0;
+            transform: rotate(45deg);
         }
 
-        .temp-control .status-text {
-            font-size: 1.1rem;
-            font-weight: 500;
+        .day-checkboxes input:checked ~ .checkmark:after {
+            display: block;
         }
+
+        @media (max-width: 768px) {
+
+            .container {
+                padding: 10px;
+            }
+            
+            .header-actions {
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            .button {
+                width: 100%;
+                margin: 5px 0;
+                text-align: center;
+            }
+
+            .buttons {
+                grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            }
+
+            
+            .day-checkboxes {
+                flex-direction: column;
+                gap: 5px;
+            }
+            
+            .day-checkboxes label {
+                margin-right: 0;
+            }
+            
+            .schedule-table {
+                display: block;
+                width: 100%;
+                overflow-x: auto;
+            }
+            
+            .action-button {
+                padding: 8px;
+                margin: 3px;
+                font-size: 0.8rem;
+                min-width: 80px;
+            }
+        }
+
     </style>
 </head>
 <body>
     <header>
-        <h1>Aquarium Control Panel</h1>
+        <h1>Schedules</h1>
     </header>
     <div class="container">
-        <div class="time-container">
-            <div id="time">Loading time...</div>
-            <div id="day">Loading day...</div>
-            <div id="date">Loading date...</div>
+        <div class="header-actions">
+            <button onclick="goBack()" class="button">Back to Dashboard</button>
         </div>
-        <div id="temperature">Temperature: -- °C</div>
-        <div class="buttons">
-            <button class="button" onclick="toggleRelay(1)" id="btn1">WaveMaker</button>
-            <button class="button" onclick="toggleRelay(3)" id="btn3">Air Pump</button>
-            <button class="button" onclick="toggleRelay(2)" id="btn2">Light</button>
-            <button class="button" onclick="oneClickLight()" id="btnOneClick">Change Light Color</button>
-            <button class="button" onclick="showLogs()">Show Logs</button>
-        </div>
-        <div id="errorSection">
-            <p>Error detected!</p>
-            <button id="clearErrorBtn" onclick="clearError()">Clear Error</button>
-        </div>
-        <div class="temp-control">
-            <h3>Heater Control</h3>
 
-            <div class="heater-status">
-                <div class="status-indicator">
-                    <span class="status-dot" id="heater-status-dot"></span>
-                    <span class="status-text">Heater Status: <span id="heater-status">Unknown</span></span>
-                </div>
-            </div>
-            
-            <div class="temp-values-display">
-                <div class="temp-value-box min-temp">
-                    <div>Min Temperature</div>
-                    <span id="min-temp-display">--</span> °C
-                </div>
-                <div class="temp-value-box max-temp">
-                    <div>Max Temperature</div>
-                    <span id="max-temp-display">--</span> °C
-                </div>
-            </div>
-            
-            <div class="slider-container">
-                <label for="min-temp-slider">Minimum Temperature (°C):</label>
-                <input type="range" id="min-temp-slider" min="20" max="30" step="1" value="24">
-                <div class="current-value">
-                    <span id="min-temp-value">24</span> °C
-                </div>
-                <div class="range-values">
-                    <span>20°C</span>
-                    <span>30°C</span>
-                </div>
-            </div>
-            
-            <div class="slider-container">
-                <label for="max-temp-slider">Maximum Temperature (°C):</label>
-                <input type="range" id="max-temp-slider" min="20" max="30" step="1" value="28">
-                <div class="current-value">
-                    <span id="max-temp-value">28</span> °C
-                </div>
-                <div class="range-values">
-                    <span>20°C</span>
-                    <span>30°C</span>
-                </div>
-            </div>
-            
-            <div class="toggle-container">
-                <label class="toggle-switch">
-                    <input type="checkbox" id="temp-control-toggle">
-                    <span class="slider"></span>
-                </label>
-                <div class="toggle-label">Temperature Control</div>
-            </div>
-            
-            <div class="temp-buttons">
-                <button class="save-button" onclick="saveTemperatureSettings()">Save Settings</button>
-            </div>
-        </div>
         <div class="schedule-form">
             <h3>Add Schedule</h3>
             <label for="relaySelect">Select Relay:</label>
@@ -2006,39 +3723,6 @@ const char mainPage[] PROGMEM = R"html(
 
             <button id="addScheduleBtn" onclick="addSchedule()">Add Schedule</button>
         </div>
-        <div class="schedule-form">
-            <h3>Add Temporary Schedule (One-time only)</h3>
-            <label for="tempRelaySelect">Select Relay:</label>
-            <select id="tempRelaySelect">
-                <option value="" disabled selected>Select Relay</option>
-                <option value="1">WaveMaker</option>
-                <option value="2">Light</option>
-                <option value="3">Air Pump</option>
-            </select>
-            <div id="tempRelayError" class="error">Please select a relay.</div>
-
-            <label for="tempOnTime">Start Time (optional):</label>
-            <input type="time" id="tempOnTime" placeholder="On Time">
-
-            <label for="tempOffTime">End Time (optional):</label>
-            <input type="time" id="tempOffTime" placeholder="Off Time">
-            <div id="tempTimeError" class="error">Please enter at least start time or end time.</div>
-
-            <button id="addTempScheduleBtn" onclick="addTemporarySchedule()">Add Temporary Schedule</button>
-        </div>
-
-        <div class="card">
-            <h3>Active Temporary Schedules</h3>
-            <table class="schedule-table" id="tempScheduleTable">
-                <tr>
-                    <th>ID</th>
-                    <th>Relay</th>
-                    <th>Start Time</th>
-                    <th>End Time</th>
-                    <th>Action</th>
-                </tr>
-            </table>
-        </div>
         <table class="schedule-table" id="scheduleTable">
             <tr>
                 <th>Relay</th>
@@ -2049,98 +3733,18 @@ const char mainPage[] PROGMEM = R"html(
                 <th>Action</th>
             </tr>
         </table>
-        <div class="log-section" id="logSection">
-            <h3>Logs</h3>
-            <pre id="logs"></pre>
-        </div>
-        <div id="successDialog">
+
+                <div id="successDialog">
         <p>Schedule added successfully!</p>
         <button onclick="closeSuccessDialog()">OK</button>
     </div>
     </div>
     <script>
-        let relayStates = {
-            1: false,
-            2: false,
-            3: false
-        };
-
-        let socket = new WebSocket('ws://' + window.location.hostname + ':81/');
-
-        socket.onopen = () => console.log('WebSocket connected');
-        socket.onmessage = (event) => {
-            try {
-                let data = JSON.parse(event.data);
-                
-                if (data.relay1Name) window.relay1Name = data.relay1Name;
-                if (data.relay2Name) window.relay2Name = data.relay2Name;
-                if (data.relay3Name) window.relay3Name = data.relay3Name;
-                if (data.relay4Name) window.relay4Name = data.relay4Name;
-                
-                if (data.relay1 !== undefined) {
-                    relayStates[1] = data.relay1;
-                    updateButtonStyle(1);
-                }
-                if (data.relay2 !== undefined) {
-                    relayStates[2] = data.relay2;
-                    updateButtonStyle(2);
-                }
-                if (data.relay3 !== undefined) {
-                    relayStates[3] = data.relay3;
-                    updateButtonStyle(3);
-                }
-                if (data.relay4 !== undefined) {
-                    updateHeaterStatus(data.relay4);
-                }
-                if (data.temperature !== undefined) {
-                    document.getElementById('temperature').textContent = 
-                        `Temperature: ${data.temperature} °C`;
-                    document.getElementById('current-temp-display').textContent = data.temperature;
-                }
-                if (data.minTemp !== undefined) {
-                    document.getElementById('min-temp-display').textContent = data.minTemp;
-                }
-                if (data.maxTemp !== undefined) {
-                    document.getElementById('max-temp-display').textContent = data.maxTemp;
-                }
-                if (data.tempControlEnabled !== undefined) {
-                    document.getElementById('temp-control-status').textContent = 
-                        data.tempControlEnabled ? 'Enabled' : 'Disabled';
-                }
-            } catch (e) {
-                console.error('WebSocket error:', e);
-            }
-        };
-        socket.onclose = () => checkErrorStatus();
-        socket.onerror = () => checkErrorStatus();
-
-        function updateTime() {
-            fetch('/time')
-                .then(response => response.text())
-                .then(data => {
-                    const [time, day, date] = data.split(' ');
-                    document.getElementById('time').textContent = time;
-                    document.getElementById('day').textContent = day;
-                    document.getElementById('date').textContent = date;
-                })
-                .catch(() => {
-                    document.getElementById('time').textContent = "Time unavailable";
-                    document.getElementById('day').textContent = "Day unavailable";
-                    document.getElementById('date').textContent = "Date unavailable";
-                });
+        function goBack() {
+            window.history.back();
         }
 
-        function toggleRelay(relay) {
-            fetch('/relay/' + relay, { method: 'POST', headers: { 'Content-Type': 'application/json' } })
-                .then(response => response.ok ? response.json() : response.json().then(data => { throw new Error(data.error); }))
-                .then(data => {
-                    relayStates[relay] = data.state;
-                    updateButtonStyle(relay);
-                })
-                .catch(error => { alert(error.message); checkErrorStatus(); });
-        }
-
-        function addSchedule() {
+                function addSchedule() {
             document.getElementById('relayError').style.display = 'none';
             document.getElementById('onTimeError').style.display = 'none';
             document.getElementById('offTimeError').style.display = 'none';
@@ -2194,6 +3798,24 @@ const char mainPage[] PROGMEM = R"html(
                 alert('Failed to add schedule: ' + error.message); 
                 checkErrorStatus(); 
             });
+        }
+
+        function checkErrorStatus() {
+            fetch('/error/status')
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('errorSection').style.display = data.hasError ? 'block' : 'none';
+                })
+                .catch(() => {
+                    document.getElementById('errorSection').style.display = 'block';
+                });
+        }
+
+        function clearError() {
+            fetch('/error/clear', { method: 'POST' })
+                .then(response => response.ok ? response.json() : { status: 'error' })
+                .then(data => { if (data.status === 'success') { document.getElementById('errorSection').style.display = 'none'; } else { throw new Error('Failed to clear error'); } })
+                .catch(error => { alert('Failed to clear error: ' + error.message); });
         }
 
         function showSuccessDialog() {
@@ -2292,529 +3914,7 @@ const char mainPage[] PROGMEM = R"html(
         document.getElementById('offTime').addEventListener('input', checkFields);
         document.querySelectorAll('.dayCheckbox').forEach(cb => cb.addEventListener('change', checkFields));
 
-        function updateButtonStyle(relay) {
-            const btn = document.getElementById('btn' + relay);
-            if (btn) {
-                btn.className = 'button ' + (relayStates[relay] ? 'on' : 'off');
-                let relayLabel = "Unknown";
-                
-                if (relay === 1 && window.relay1Name) relayLabel = window.relay1Name;
-                else if (relay === 2 && window.relay2Name) relayLabel = window.relay2Name;
-                else if (relay === 3 && window.relay3Name) relayLabel = window.relay3Name;
-                else if (relay === 1) relayLabel = "WaveMaker";
-                else if (relay === 2) relayLabel = "Light";
-                else if (relay === 3) relayLabel = "Air Pump";
-                
-                btn.textContent = `${relayLabel} (${relayStates[relay] ? 'ON' : 'OFF'})`;
-            }
-        }
-
-        function getInitialStates() {
-            fetch('/relay/status')
-                .then(response => response.json())
-                .then(data => { 
-                    relayStates = data; 
-                    for(let relay in relayStates) updateButtonStyle(relay);
-                    if (data["4"] !== undefined) {
-                        updateHeaterStatus(data["4"]);
-                    }
-                })
-                .catch(() => checkErrorStatus());
-        }
-
-        function checkErrorStatus() {
-            fetch('/error/status')
-                .then(response => response.json())
-                .then(data => {
-                    document.getElementById('errorSection').style.display = data.hasError ? 'block' : 'none';
-                })
-                .catch(() => {
-                    document.getElementById('errorSection').style.display = 'block';
-                });
-        }
-
-        function clearError() {
-            fetch('/error/clear', { method: 'POST' })
-                .then(response => response.ok ? response.json() : { status: 'error' })
-                .then(data => { if (data.status === 'success') { document.getElementById('errorSection').style.display = 'none'; } else { throw new Error('Failed to clear error'); } })
-                .catch(error => { alert('Failed to clear error: ' + error.message); });
-        }
-
-        function showLogs() {
-            window.location.href = '/logs';
-        }
-
-        function oneClickLight() {
-            fetch('/relay/oneclick', { method: 'POST' })
-            .then(response => response.json().then(data => {
-                if (!response.ok) throw new Error(data.error);
-                alert('Light colour changed successfully.');
-            }))
-            .catch(error => alert(error.message));
-        }
-        
-        function updateTemperatureSliders() {
-            document.getElementById('min-temp-value').textContent = document.getElementById('min-temp-slider').value;
-            document.getElementById('max-temp-value').textContent = document.getElementById('max-temp-slider').value;
-        }
-
-        function loadTemperatureSettings() {
-            fetch('/temperature/settings')
-                .then(response => response.json())
-                .then(data => {
-                    document.getElementById('min-temp-slider').value = data.minTemp;
-                    document.getElementById('max-temp-slider').value = data.maxTemp;
-                    document.getElementById('temp-control-toggle').checked = data.enabled;
-                    
-                    // Update display values
-                    document.getElementById('min-temp-value').textContent = data.minTemp;
-                    document.getElementById('max-temp-value').textContent = data.maxTemp;
-                    document.getElementById('min-temp-display').textContent = data.minTemp;
-                    document.getElementById('max-temp-display').textContent = data.maxTemp;
-                    document.getElementById('current-temp-display').textContent = data.currentTemp;
-                    document.getElementById('temp-control-status').textContent = data.enabled ? 'Enabled' : 'Disabled';
-                })
-                .catch(error => {
-                    console.error('Error loading temperature settings:', error);
-                });
-        }
-
-        function saveTemperatureSettings() {
-            const minTemp = parseInt(document.getElementById('min-temp-slider').value);
-            const maxTemp = parseInt(document.getElementById('max-temp-slider').value);
-            const enabled = document.getElementById('temp-control-toggle').checked;
-            
-            if (minTemp >= maxTemp) {
-                alert('Minimum temperature must be less than maximum temperature!');
-                return;
-            }
-            
-            const settings = {
-                minTemp: minTemp,
-                maxTemp: maxTemp,
-                enabled: enabled
-            };
-            
-            fetch('/temperature/save', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(settings)
-            })
-            .then(response => {
-                if (!response.ok) {
-                    return response.json().then(data => { throw new Error(data.error); });
-                }
-                return response.json();
-            })
-            .then(data => {
-                alert('Temperature settings saved successfully!');
-                loadTemperatureSettings(); // Reload to confirm settings
-            })
-            .catch(error => {
-                alert('Failed to save settings: ' + error.message);
-            });
-        }
-
-        function updateHeaterStatus(isOn) {
-            const statusDot = document.getElementById('heater-status-dot');
-            const statusText = document.getElementById('heater-status');
-            
-            if (statusDot && statusText) {
-                statusDot.className = 'status-dot ' + (isOn ? 'on' : 'off');
-                statusText.textContent = isOn ? 'ON' : 'OFF';
-            }
-        }
-                
-        document.getElementById('min-temp-slider').addEventListener('input', updateTemperatureSliders);
-        document.getElementById('max-temp-slider').addEventListener('input', updateTemperatureSliders);
-
-
-        function addTemporarySchedule() {
-            document.getElementById('tempRelayError').style.display = 'none';
-            document.getElementById('tempTimeError').style.display = 'none';
-
-            const relay = document.getElementById('tempRelaySelect').value;
-            const onTime = document.getElementById('tempOnTime').value;
-            const offTime = document.getElementById('tempOffTime').value;
-            
-            let hasError = false;
-
-            if (relay === "") {
-                document.getElementById('tempRelayError').style.display = 'block';
-                hasError = true;
-            }
-            
-            if (!onTime && !offTime) {
-                document.getElementById('tempTimeError').style.display = 'block';
-                hasError = true;
-            }
-            
-            if (hasError) {
-                return;
-            }
-
-            let requestBody = { relay };
-            if (onTime) requestBody.onTime = onTime;
-            if (offTime) requestBody.offTime = offTime;
-
-            fetch('/temp-schedule/add', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(requestBody)
-            })
-            .then(response => response.ok ? response.json() : response.json().then(data => { throw new Error(data.error); }))
-            .then(() => { 
-                loadTemporarySchedules(); 
-                checkErrorStatus(); 
-                document.getElementById('tempRelaySelect').value = '';
-                document.getElementById('tempOnTime').value = '';
-                document.getElementById('tempOffTime').value = '';
-                alert('Temporary schedule added successfully!');
-            })
-            .catch(error => { 
-                alert('Failed to add temporary schedule: ' + error.message); 
-                checkErrorStatus(); 
-            });
-        }
-
-        function deleteTemporarySchedule(id) {
-            fetch('/temp-schedule/delete?id=' + id, { method: 'DELETE', headers: { 'Content-Type': 'application/json' } })
-                .then(response => response.ok ? response.json() : { status: 'error' })
-                .then(data => { 
-                    if (data.status === 'success') { 
-                        loadTemporarySchedules(); 
-                        checkErrorStatus(); 
-                    } else { 
-                        throw new Error('Failed to delete temporary schedule'); 
-                    } 
-                })
-                .catch(error => { 
-                    alert('Failed to delete temporary schedule: ' + error.message); 
-                    checkErrorStatus(); 
-                });
-        }
-
-        function loadTemporarySchedules() {
-            fetch('/temp-schedules')
-                .then(response => response.json())
-                .then(schedules => {
-                    const table = document.getElementById('tempScheduleTable');
-                    table.innerHTML = `<tr>
-                        <th>ID</th>
-                        <th>Relay</th>
-                        <th>Start Time</th>
-                        <th>End Time</th>
-                        <th>Action</th>
-                    </tr>`;
-                    
-                    schedules.forEach(schedule => {
-                        const row = table.insertRow();
-                        let relayName = "Unknown";
-                        if (schedule.relay == 1) relayName = "WaveMaker";
-                        else if (schedule.relay == 2) relayName = "Light";
-                        else if (schedule.relay == 3) relayName = "Air Pump";
-                        
-                        row.insertCell(0).textContent = schedule.id;
-                        row.insertCell(1).textContent = relayName;
-                        
-                        let startTime = schedule.hasOnTime ? 
-                            `${String(schedule.onHour).padStart(2, '0')}:${String(schedule.onMinute).padStart(2, '0')}` : 
-                            'Not set';
-                        row.insertCell(2).textContent = startTime;
-                        
-                        let endTime = schedule.hasOffTime ? 
-                            `${String(schedule.offHour).padStart(2, '0')}:${String(schedule.offMinute).padStart(2, '0')}` : 
-                            'Not set';
-                        row.insertCell(3).textContent = endTime;
-                        
-                        const actionCell = row.insertCell(4);
-                        const deleteBtn = document.createElement('button');
-                        deleteBtn.textContent = 'Delete';
-                        deleteBtn.className = 'action-button delete';
-                        deleteBtn.onclick = () => deleteTemporarySchedule(schedule.id);
-                        actionCell.appendChild(deleteBtn);
-                    });
-                })
-                .catch(() => checkErrorStatus());
-        }
-
-        setInterval(updateTime, 1000);
-        setInterval(checkErrorStatus, 2000);
-        updateTime();
         loadSchedules();
-        getInitialStates();
-        checkErrorStatus();
-        loadTemperatureSettings();
-        loadTemporarySchedules();
-        setInterval(loadTemporarySchedules, 5000);
-    </script>
-</body>
-</html>
-)html";
-
-const char logsPage[] PROGMEM = R"html(
-<!DOCTYPE html>
-<html>
-<head>
-    <link rel="icon" type="image/png" href="/favicon.png">
-    <link rel="shortcut icon" type="image/png" href="/favicon.png">
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>System Logs</title>
-    <style>
-        :root {
-            --primary-color: #1976D2;
-            --primary-dark: #0D47A1;
-            --primary-light: #BBDEFB;
-            --accent-color: #03A9F4;
-            --success-color: #4CAF50;
-            --warning-color: #FFC107;
-            --error-color: #F44336;
-            --text-color: #333;
-            --text-light: #757575;
-            --background-color: #f5f7fa;
-            --card-color: #ffffff;
-            --border-radius: 8px;
-            --shadow: 0 2px 10px rgba(0,0,0,0.1);
-            --transition: all 0.3s ease;
-        }
-
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-        }
-
-        body {
-            margin: 0;
-            padding: 0;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: var(--background-color);
-            color: var(--text-color);
-            line-height: 1.6;
-        }
-
-        header {
-            background: linear-gradient(135deg, var(--primary-color), var(--primary-dark));
-            color: white;
-            padding: 20px;
-            text-align: center;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            position: relative;
-            z-index: 10;
-            margin-bottom: 30px;
-        }
-
-        header h1 {
-            margin: 0;
-            font-size: 2rem;
-            letter-spacing: 0.5px;
-        }
-
-        .container {
-            padding: 20px;
-            max-width: 1200px;
-            margin: auto;
-        }
-
-        .logs-table {
-            width: 100%;
-            border-collapse: separate;
-            border-spacing: 0;
-            background-color: var(--card-color);
-            box-shadow: var(--shadow);
-            border-radius: var(--border-radius);
-            overflow: hidden;
-            margin-bottom: 30px;
-        }
-
-        .logs-table th, .logs-table td {
-            padding: 15px;
-            text-align: left;
-        }
-
-        .logs-table th {
-            background-color: var(--primary-color);
-            color: white;
-            font-weight: 500;
-        }
-
-        .logs-table tr:nth-child(even) {
-            background-color: #f9f9f9;
-        }
-
-        .logs-table tr {
-            transition: var(--transition);
-            border-bottom: 1px solid #eee;
-        }
-
-        .logs-table tr:last-child {
-            border-bottom: none;
-        }
-
-        .logs-table tr:hover {
-            background-color: #f1f1f1;
-        }
-
-        .button {
-            display: inline-block;
-            padding: 12px 24px;
-            background-color: var(--primary-color);
-            color: white;
-            text-decoration: none;
-            border-radius: var(--border-radius);
-            margin: 5px 0 20px 0;
-            transition: var(--transition);
-            border: none;
-            cursor: pointer;
-            font-size: 1rem;
-            font-weight: 500;
-            box-shadow: var(--shadow);
-            text-align: center;
-        }
-
-        .button:hover {
-            background-color: var(--primary-dark);
-            transform: translateY(-2px);
-            box-shadow: 0 4px 10px rgba(0,0,0,0.15);
-        }
-
-        .button:active {
-            transform: translateY(1px);
-        }
-
-        .refresh-button {
-            float: right;
-            background-color: var(--success-color);
-        }
-
-        .refresh-button:hover {
-            background-color: #388E3C;
-        }
-
-        .header-actions {
-            margin-bottom: 20px;
-            overflow: hidden;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 10px;
-        }
-
-        @media (max-width: 768px) {
-            .logs-table {
-                font-size: 14px;
-            }
-            
-            .logs-table th, .logs-table td {
-                padding: 10px;
-            }
-            
-            .container {
-                padding: 10px;
-            }
-            
-            .header-actions {
-                flex-direction: column;
-                align-items: stretch;
-            }
-            
-            .button {
-                width: 100%;
-                margin: 5px 0;
-                text-align: center;
-            }
-            
-            .refresh-button {
-                float: none;
-            }
-        }
-
-        .loading {
-            display: none;
-            text-align: center;
-            padding: 20px;
-        }
-
-        .loading-spinner {
-            border: 4px solid #f3f3f3;
-            border-top: 4px solid var(--primary-color);
-            border-radius: 50%;
-            width: 40px;
-            height: 40px;
-            animation: spin 1s linear infinite;
-            margin: 0 auto;
-        }
-
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-    </style>
-</head>
-<body>
-    <header>
-        <h1>System Logs</h1>
-    </header>
-    <div class="container">
-        <div class="header-actions">
-            <button onclick="goBack()" class="button">Back to Dashboard</button>
-            <button onclick="refreshLogs()" class="button refresh-button">Refresh Logs</button>
-        </div>
-        <div id="loading" class="loading">
-            <div class="loading-spinner"></div>
-            <p>Loading logs...</p>
-        </div>
-        <table class="logs-table">
-            <thead>
-                <tr>
-                    <th>ID</th>
-                    <th>Timestamp</th>
-                    <th>Message</th>
-                </tr>
-            </thead>
-            <tbody id="logsTableBody">
-            </tbody>
-        </table>
-    </div>
-    <script>
-        function loadLogs() {
-            document.getElementById('loading').style.display = 'block';
-            
-            fetch('/logs/data')
-                .then(response => response.json())
-                .then(data => {
-                    const tableBody = document.getElementById('logsTableBody');
-                    tableBody.innerHTML = '';
-                    
-                    if (data.logs && Array.isArray(data.logs)) {
-                        data.logs.reverse().forEach(log => {
-                            const row = tableBody.insertRow();
-                            row.insertCell(0).textContent = log.id;
-                            row.insertCell(1).textContent = log.timestamp;
-                            row.insertCell(2).textContent = log.message;
-                        });
-                    }
-                    
-                    document.getElementById('loading').style.display = 'none';
-                })
-                .catch(error => {
-                    console.error('Error loading logs:', error);
-                    document.getElementById('loading').style.display = 'none';
-                });
-        }
-
-        function refreshLogs() {
-            loadLogs();
-        }
-
-        function goBack() {
-            window.history.back();
-        }
-
-        loadLogs();
-        setInterval(loadLogs, 10000);
     </script>
 </body>
 </html>
@@ -2825,6 +3925,18 @@ const unsigned long WIFI_RECONNECT_INTERVAL = 30000;
 
 void handleLogsPage() {
   server.send_P(200, "text/html", logsPage);
+}
+
+void handleHeaterCtrlPage() {
+  server.send_P(200, "text/html", heaterctrl);
+}
+
+void handleTempSchedulesPage() {
+  server.send_P(200, "text/html", tempschedules);
+}
+
+void handleSchedulesPage() {
+  server.send_P(200, "text/html", mainSchedules);
 }
 
 void loop() {
@@ -3767,7 +4879,7 @@ void handleAddTemporarySchedule() {
       newSchedule.id = tempScheduleIdCounter++;
       newSchedule.relayNumber = doc["relay"].as<int>();
       newSchedule.enabled = true;
-      
+
       if (doc.containsKey("onTime") && !doc["onTime"].isNull()) {
         String onTime = doc["onTime"].as<String>();
         if (onTime.length() >= 5) {
@@ -3780,7 +4892,7 @@ void handleAddTemporarySchedule() {
       } else {
         newSchedule.hasOnTime = false;
       }
-      
+
       if (doc.containsKey("offTime") && !doc["offTime"].isNull()) {
         String offTime = doc["offTime"].as<String>();
         if (offTime.length() >= 5) {
@@ -3802,7 +4914,7 @@ void handleAddTemporarySchedule() {
 
       temporarySchedules.push_back(newSchedule);
       server.send(200, "application/json", "{\"status\":\"success\",\"id\":" + String(newSchedule.id) + "}");
-      
+
       String logMsg = "Temporary schedule added for relay " + String(newSchedule.relayNumber);
       if (newSchedule.hasOnTime) {
         logMsg += " ON at " + String(newSchedule.onHour) + ":" + (newSchedule.onMinute < 10 ? "0" : "") + String(newSchedule.onMinute);
@@ -3852,7 +4964,7 @@ void checkTemporarySchedules() {
   for (auto it = temporarySchedules.begin(); it != temporarySchedules.end();) {
     const TemporarySchedule& schedule = *it;
     bool shouldRemove = false;
-    
+
     if (!schedule.enabled) {
       ++it;
       continue;
@@ -3875,12 +4987,12 @@ void checkTemporarySchedules() {
           storeLogEntry("Temporary schedule activated relay 3");
         }
       }
-      
+
       if (!schedule.hasOffTime) {
         shouldRemove = true;
       }
     }
-    
+
     if (schedule.hasOffTime && hours == schedule.offHour && minutes == schedule.offMinute && seconds == 0) {
       if (schedule.relayNumber == 1) {
         if (relay1State && !overrideRelay1) {
@@ -3898,21 +5010,21 @@ void checkTemporarySchedules() {
           storeLogEntry("Temporary schedule deactivated relay 3");
         }
       }
-      
+
       if (!schedule.hasOnTime) {
         shouldRemove = true;
       }
     }
-    
+
     if (schedule.hasOnTime && schedule.hasOffTime) {
       bool onTimePassed = (hours > schedule.onHour) || (hours == schedule.onHour && minutes > schedule.onMinute);
       bool offTimePassed = (hours > schedule.offHour) || (hours == schedule.offHour && minutes > schedule.offMinute);
-      
+
       if (onTimePassed && offTimePassed) {
         shouldRemove = true;
       }
     }
-    
+
     if (shouldRemove) {
       storeLogEntry("Temporary schedule ID " + String(schedule.id) + " completed and removed");
       it = temporarySchedules.erase(it);
