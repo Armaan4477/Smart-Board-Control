@@ -49,6 +49,10 @@ void handleToggleTemperatureControl();
 void loadTemperatureSettings();
 void saveTemperatureSettings();
 void checkTemperatureControl();
+void handleGetTemporarySchedules();
+void handleAddTemporarySchedule();
+void handleDeleteTemporarySchedule();
+void checkTemporarySchedules();
 
 struct Schedule {
   int id;
@@ -70,6 +74,18 @@ struct LogEntry {
 struct TemperatureData {
   int minTemp;
   int maxTemp;
+  bool enabled;
+};
+
+struct TemporarySchedule {
+  int id;
+  int relayNumber;
+  int onHour;
+  int onMinute;
+  int offHour;
+  int offMinute;
+  bool hasOnTime;
+  bool hasOffTime;
   bool enabled;
 };
 
@@ -115,10 +131,8 @@ bool pointemail = false;
 unsigned long logIdCounter = 0;
 std::vector<Schedule> schedules;
 std::vector<TemperatureData> temperatureData;
-void handleAddSchedule();
-void handleDeleteSchedule();
-void handleClearError();
-void handleGetErrorStatus();
+std::vector<TemporarySchedule> temporarySchedules;
+int tempScheduleIdCounter = 0;
 const int EEPROM_SIZE = 512;
 const int SCHEDULE_SIZE = sizeof(Schedule);
 const int MAX_SCHEDULES = 10;
@@ -938,6 +952,9 @@ void setup() {
   server.on("/relay/oneclick", HTTP_POST, handleOneClickLight);
   server.on("/temperature/settings", HTTP_GET, handleGetTemperatureSettings);
   server.on("/temperature/save", HTTP_POST, handleSaveTemperatureSettings);
+  server.on("/temp-schedules", HTTP_GET, handleGetTemporarySchedules);
+  server.on("/temp-schedule/add", HTTP_POST, handleAddTemporarySchedule);
+  server.on("/temp-schedule/delete", HTTP_DELETE, handleDeleteTemporarySchedule);
   server.begin();
   EEPROM.begin(EEPROM_SIZE);
   loadSchedulesFromEEPROM();
@@ -1874,6 +1891,10 @@ const char mainPage[] PROGMEM = R"html(
             <button class="button" onclick="oneClickLight()" id="btnOneClick">Change Light Color</button>
             <button class="button" onclick="showLogs()">Show Logs</button>
         </div>
+        <div id="errorSection">
+            <p>Error detected!</p>
+            <button id="clearErrorBtn" onclick="clearError()">Clear Error</button>
+        </div>
         <div class="temp-control">
             <h3>Heater Control</h3>
 
@@ -1985,9 +2006,38 @@ const char mainPage[] PROGMEM = R"html(
 
             <button id="addScheduleBtn" onclick="addSchedule()">Add Schedule</button>
         </div>
-        <div id="errorSection">
-            <p>Error detected!</p>
-            <button id="clearErrorBtn" onclick="clearError()">Clear Error</button>
+        <div class="schedule-form">
+            <h3>Add Temporary Schedule (One-time only)</h3>
+            <label for="tempRelaySelect">Select Relay:</label>
+            <select id="tempRelaySelect">
+                <option value="" disabled selected>Select Relay</option>
+                <option value="1">WaveMaker</option>
+                <option value="2">Light</option>
+                <option value="3">Air Pump</option>
+            </select>
+            <div id="tempRelayError" class="error">Please select a relay.</div>
+
+            <label for="tempOnTime">Start Time (optional):</label>
+            <input type="time" id="tempOnTime" placeholder="On Time">
+
+            <label for="tempOffTime">End Time (optional):</label>
+            <input type="time" id="tempOffTime" placeholder="Off Time">
+            <div id="tempTimeError" class="error">Please enter at least start time or end time.</div>
+
+            <button id="addTempScheduleBtn" onclick="addTemporarySchedule()">Add Temporary Schedule</button>
+        </div>
+
+        <div class="card">
+            <h3>Active Temporary Schedules</h3>
+            <table class="schedule-table" id="tempScheduleTable">
+                <tr>
+                    <th>ID</th>
+                    <th>Relay</th>
+                    <th>Start Time</th>
+                    <th>End Time</th>
+                    <th>Action</th>
+                </tr>
+            </table>
         </div>
         <table class="schedule-table" id="scheduleTable">
             <tr>
@@ -2377,7 +2427,116 @@ const char mainPage[] PROGMEM = R"html(
                 
         document.getElementById('min-temp-slider').addEventListener('input', updateTemperatureSliders);
         document.getElementById('max-temp-slider').addEventListener('input', updateTemperatureSliders);
-        
+
+
+        function addTemporarySchedule() {
+            document.getElementById('tempRelayError').style.display = 'none';
+            document.getElementById('tempTimeError').style.display = 'none';
+
+            const relay = document.getElementById('tempRelaySelect').value;
+            const onTime = document.getElementById('tempOnTime').value;
+            const offTime = document.getElementById('tempOffTime').value;
+            
+            let hasError = false;
+
+            if (relay === "") {
+                document.getElementById('tempRelayError').style.display = 'block';
+                hasError = true;
+            }
+            
+            if (!onTime && !offTime) {
+                document.getElementById('tempTimeError').style.display = 'block';
+                hasError = true;
+            }
+            
+            if (hasError) {
+                return;
+            }
+
+            let requestBody = { relay };
+            if (onTime) requestBody.onTime = onTime;
+            if (offTime) requestBody.offTime = offTime;
+
+            fetch('/temp-schedule/add', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(requestBody)
+            })
+            .then(response => response.ok ? response.json() : response.json().then(data => { throw new Error(data.error); }))
+            .then(() => { 
+                loadTemporarySchedules(); 
+                checkErrorStatus(); 
+                document.getElementById('tempRelaySelect').value = '';
+                document.getElementById('tempOnTime').value = '';
+                document.getElementById('tempOffTime').value = '';
+                alert('Temporary schedule added successfully!');
+            })
+            .catch(error => { 
+                alert('Failed to add temporary schedule: ' + error.message); 
+                checkErrorStatus(); 
+            });
+        }
+
+        function deleteTemporarySchedule(id) {
+            fetch('/temp-schedule/delete?id=' + id, { method: 'DELETE', headers: { 'Content-Type': 'application/json' } })
+                .then(response => response.ok ? response.json() : { status: 'error' })
+                .then(data => { 
+                    if (data.status === 'success') { 
+                        loadTemporarySchedules(); 
+                        checkErrorStatus(); 
+                    } else { 
+                        throw new Error('Failed to delete temporary schedule'); 
+                    } 
+                })
+                .catch(error => { 
+                    alert('Failed to delete temporary schedule: ' + error.message); 
+                    checkErrorStatus(); 
+                });
+        }
+
+        function loadTemporarySchedules() {
+            fetch('/temp-schedules')
+                .then(response => response.json())
+                .then(schedules => {
+                    const table = document.getElementById('tempScheduleTable');
+                    table.innerHTML = `<tr>
+                        <th>ID</th>
+                        <th>Relay</th>
+                        <th>Start Time</th>
+                        <th>End Time</th>
+                        <th>Action</th>
+                    </tr>`;
+                    
+                    schedules.forEach(schedule => {
+                        const row = table.insertRow();
+                        let relayName = "Unknown";
+                        if (schedule.relay == 1) relayName = "WaveMaker";
+                        else if (schedule.relay == 2) relayName = "Light";
+                        else if (schedule.relay == 3) relayName = "Air Pump";
+                        
+                        row.insertCell(0).textContent = schedule.id;
+                        row.insertCell(1).textContent = relayName;
+                        
+                        let startTime = schedule.hasOnTime ? 
+                            `${String(schedule.onHour).padStart(2, '0')}:${String(schedule.onMinute).padStart(2, '0')}` : 
+                            'Not set';
+                        row.insertCell(2).textContent = startTime;
+                        
+                        let endTime = schedule.hasOffTime ? 
+                            `${String(schedule.offHour).padStart(2, '0')}:${String(schedule.offMinute).padStart(2, '0')}` : 
+                            'Not set';
+                        row.insertCell(3).textContent = endTime;
+                        
+                        const actionCell = row.insertCell(4);
+                        const deleteBtn = document.createElement('button');
+                        deleteBtn.textContent = 'Delete';
+                        deleteBtn.className = 'action-button delete';
+                        deleteBtn.onclick = () => deleteTemporarySchedule(schedule.id);
+                        actionCell.appendChild(deleteBtn);
+                    });
+                })
+                .catch(() => checkErrorStatus());
+        }
 
         setInterval(updateTime, 1000);
         setInterval(checkErrorStatus, 2000);
@@ -2386,6 +2545,8 @@ const char mainPage[] PROGMEM = R"html(
         getInitialStates();
         checkErrorStatus();
         loadTemperatureSettings();
+        loadTemporarySchedules();
+        setInterval(loadTemporarySchedules, 5000);
     </script>
 </body>
 </html>
@@ -2710,7 +2871,7 @@ void emailLoop(void* parameter) {
         pointemail = false;
       }
     }
-    delay(600);
+    delay(5);
   }
 }
 
@@ -2738,6 +2899,7 @@ void mainLoop(void* parameter) {
 
       if (validTimeSync) {
         checkSchedules();
+        checkTemporarySchedules();
 
         struct tm timeinfo;
         if (getLocalTime(&timeinfo)) {
@@ -3562,6 +3724,200 @@ void checkTemperatureControl() {
       relay4State = true;
       storeLogEntry("Heater turned ON - Temperature " + String(lastValidTemperature, 1) + "°C below minimum " + String(temperatureData[0].minTemp) + "°C");
       broadcastRelayStates();
+    }
+  }
+}
+
+
+void handleGetTemporarySchedules() {
+  String json = "[";
+  for (size_t i = 0; i < temporarySchedules.size(); i++) {
+    if (i > 0) json += ",";
+    const TemporarySchedule& s = temporarySchedules[i];
+    json += "{";
+    json += "\"id\":" + String(s.id) + ",";
+    json += "\"relay\":" + String(s.relayNumber) + ",";
+    json += "\"onHour\":" + String(s.onHour) + ",";
+    json += "\"onMinute\":" + String(s.onMinute) + ",";
+    json += "\"offHour\":" + String(s.offHour) + ",";
+    json += "\"offMinute\":" + String(s.offMinute) + ",";
+    json += "\"hasOnTime\":" + String(s.hasOnTime ? "true" : "false") + ",";
+    json += "\"hasOffTime\":" + String(s.hasOffTime ? "true" : "false") + ",";
+    json += "\"enabled\":" + String(s.enabled ? "true" : "false");
+    json += "}";
+  }
+  json += "]";
+  server.send(200, "application/json", json);
+}
+
+void handleAddTemporarySchedule() {
+  if (server.hasArg("plain")) {
+    String body = server.arg("plain");
+    StaticJsonDocument<300> doc;
+    DeserializationError error = deserializeJson(doc, body);
+
+    if (!error) {
+      if (!doc.containsKey("relay") || doc["relay"].isNull()) {
+        server.send(400, "application/json", "{\"error\":\"Missing relay\"}");
+        storeLogEntry("Add Temporary Schedule failed: Missing relay.");
+        return;
+      }
+
+      TemporarySchedule newSchedule;
+      newSchedule.id = tempScheduleIdCounter++;
+      newSchedule.relayNumber = doc["relay"].as<int>();
+      newSchedule.enabled = true;
+      
+      if (doc.containsKey("onTime") && !doc["onTime"].isNull()) {
+        String onTime = doc["onTime"].as<String>();
+        if (onTime.length() >= 5) {
+          newSchedule.onHour = onTime.substring(0, 2).toInt();
+          newSchedule.onMinute = onTime.substring(3).toInt();
+          newSchedule.hasOnTime = true;
+        } else {
+          newSchedule.hasOnTime = false;
+        }
+      } else {
+        newSchedule.hasOnTime = false;
+      }
+      
+      if (doc.containsKey("offTime") && !doc["offTime"].isNull()) {
+        String offTime = doc["offTime"].as<String>();
+        if (offTime.length() >= 5) {
+          newSchedule.offHour = offTime.substring(0, 2).toInt();
+          newSchedule.offMinute = offTime.substring(3).toInt();
+          newSchedule.hasOffTime = true;
+        } else {
+          newSchedule.hasOffTime = false;
+        }
+      } else {
+        newSchedule.hasOffTime = false;
+      }
+
+      if (!newSchedule.hasOnTime && !newSchedule.hasOffTime) {
+        server.send(400, "application/json", "{\"error\":\"Must provide at least start time or end time\"}");
+        storeLogEntry("Add Temporary Schedule failed: No times provided.");
+        return;
+      }
+
+      temporarySchedules.push_back(newSchedule);
+      server.send(200, "application/json", "{\"status\":\"success\",\"id\":" + String(newSchedule.id) + "}");
+      
+      String logMsg = "Temporary schedule added for relay " + String(newSchedule.relayNumber);
+      if (newSchedule.hasOnTime) {
+        logMsg += " ON at " + String(newSchedule.onHour) + ":" + (newSchedule.onMinute < 10 ? "0" : "") + String(newSchedule.onMinute);
+      }
+      if (newSchedule.hasOffTime) {
+        logMsg += " OFF at " + String(newSchedule.offHour) + ":" + (newSchedule.offMinute < 10 ? "0" : "") + String(newSchedule.offMinute);
+      }
+      storeLogEntry(logMsg);
+      clearError();
+      return;
+    }
+    indicateError();
+  }
+  server.send(400, "application/json", "{\"error\":\"Invalid request\"}");
+}
+
+void handleDeleteTemporarySchedule() {
+  if (server.hasArg("id")) {
+    int id = server.arg("id").toInt();
+    storeLogEntry("Delete request for temporary schedule ID: " + String(id));
+
+    for (auto it = temporarySchedules.begin(); it != temporarySchedules.end(); ++it) {
+      if (it->id == id) {
+        temporarySchedules.erase(it);
+        storeLogEntry("Temporary schedule deleted successfully");
+        server.send(200, "application/json", "{\"status\":\"success\"}");
+        clearError();
+        return;
+      }
+    }
+    indicateError();
+  }
+  storeLogEntry("Invalid temporary schedule delete request");
+  server.send(400, "application/json", "{\"error\":\"Invalid schedule ID\"}");
+}
+
+void checkTemporarySchedules() {
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) {
+    return;
+  }
+
+  int hours = timeinfo.tm_hour;
+  int minutes = timeinfo.tm_min;
+  int seconds = timeinfo.tm_sec;
+
+  for (auto it = temporarySchedules.begin(); it != temporarySchedules.end();) {
+    const TemporarySchedule& schedule = *it;
+    bool shouldRemove = false;
+    
+    if (!schedule.enabled) {
+      ++it;
+      continue;
+    }
+
+    if (schedule.hasOnTime && hours == schedule.onHour && minutes == schedule.onMinute && seconds == 0) {
+      if (schedule.relayNumber == 1) {
+        if (!relay1State && !overrideRelay1) {
+          activateRelay(1, false);
+          storeLogEntry("Temporary schedule activated relay 1");
+        }
+      } else if (schedule.relayNumber == 2) {
+        if (!relay2State && !overrideRelay2) {
+          activateRelay(2, false);
+          storeLogEntry("Temporary schedule activated relay 2");
+        }
+      } else if (schedule.relayNumber == 3) {
+        if (!relay3State && !overrideRelay1) {
+          activateRelay(3, false);
+          storeLogEntry("Temporary schedule activated relay 3");
+        }
+      }
+      
+      if (!schedule.hasOffTime) {
+        shouldRemove = true;
+      }
+    }
+    
+    if (schedule.hasOffTime && hours == schedule.offHour && minutes == schedule.offMinute && seconds == 0) {
+      if (schedule.relayNumber == 1) {
+        if (relay1State && !overrideRelay1) {
+          deactivateRelay(1, false);
+          storeLogEntry("Temporary schedule deactivated relay 1");
+        }
+      } else if (schedule.relayNumber == 2) {
+        if (relay2State && !overrideRelay2) {
+          deactivateRelay(2, false);
+          storeLogEntry("Temporary schedule deactivated relay 2");
+        }
+      } else if (schedule.relayNumber == 3) {
+        if (relay3State && !overrideRelay1) {
+          deactivateRelay(3, false);
+          storeLogEntry("Temporary schedule deactivated relay 3");
+        }
+      }
+      
+      if (!schedule.hasOnTime) {
+        shouldRemove = true;
+      }
+    }
+    
+    if (schedule.hasOnTime && schedule.hasOffTime) {
+      bool onTimePassed = (hours > schedule.onHour) || (hours == schedule.onHour && minutes > schedule.onMinute);
+      bool offTimePassed = (hours > schedule.offHour) || (hours == schedule.offHour && minutes > schedule.offMinute);
+      
+      if (onTimePassed && offTimePassed) {
+        shouldRemove = true;
+      }
+    }
+    
+    if (shouldRemove) {
+      storeLogEntry("Temporary schedule ID " + String(schedule.id) + " completed and removed");
+      it = temporarySchedules.erase(it);
+    } else {
+      ++it;
     }
   }
 }
