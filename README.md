@@ -27,7 +27,6 @@ This project is an ESP32-based aquarium control system that automates and monito
 - DS18B20 temperature sensor
 - 2 switches for manual override
 - Status LED
-- 4.7kΩ resistor (for temperature sensor)
 - Power supply
 - Aquarium equipment to control (Wavemaker, Lights, Air Pump, Heater)
 
