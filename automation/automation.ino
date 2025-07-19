@@ -170,6 +170,7 @@ const unsigned long BLINK_INTERVAL = 1000;
 bool blinkState = false;
 const char* authUsername = "admin";
 const char* authPassword = "12345678";
+const int MAX_TEMP_SCHEDULES = 5;
 
 #define ONE_WIRE_BUS 26
 OneWire oneWire(ONE_WIRE_BUS);
