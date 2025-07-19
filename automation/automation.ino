@@ -1278,11 +1278,11 @@ const char mainPage[] PROGMEM = R"html(
         }
 
         .nav-button {
-            background-color: var(--accent-color);
+            background-color: var(--primary-color);
         }
 
         .nav-button:hover {
-            background-color: #0288D1;
+            background-color: var(--primary-dark);
         }
 
         .special-button {
@@ -1374,6 +1374,11 @@ const char mainPage[] PROGMEM = R"html(
             <div id="date">Loading date...</div>
         </div>
         <div id="temperature">Temperature: -- °C</div>
+
+        <div id="errorSection">
+            <p>Error detected!</p>
+            <button id="clearErrorBtn" onclick="clearError()">Clear Error</button>
+        </div>
         
         <div class="control-section">
             <h3>Relay Controls</h3>
@@ -1388,16 +1393,11 @@ const char mainPage[] PROGMEM = R"html(
         <div class="control-section">
             <h3>System Navigation</h3>
             <div class="navigation-buttons">
-                <button class="button nav-button" onclick="showSchedules()">Main Schedules</button>
                 <button class="button nav-button" onclick="showTempSchedules()">Temporary Schedules</button>
+                <button class="button nav-button" onclick="showSchedules()">Main Schedules</button>
                 <button class="button nav-button" onclick="showHeaterControl()">Heater Control</button>
                 <button class="button nav-button" onclick="showLogs()">System Logs</button>
             </div>
-        </div>
-
-        <div id="errorSection">
-            <p>Error detected!</p>
-            <button id="clearErrorBtn" onclick="clearError()">Clear Error</button>
         </div>
     </div>
     <script>
