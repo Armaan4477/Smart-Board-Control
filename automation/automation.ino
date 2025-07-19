@@ -1123,6 +1123,7 @@ const char mainPage[] PROGMEM = R"html(
             --accent-color: #03A9F4;
             --success-color: #4CAF50;
             --warning-color: #FFC107;
+            --lightbtn-color: #94730eff;
             --error-color: #F44336;
             --text-color: #333;
             --text-light: #757575;
@@ -1287,12 +1288,12 @@ const char mainPage[] PROGMEM = R"html(
         }
 
         .special-button {
-            background-color: var(--warning-color);
+            background-color: var(--lightbtn-color);
             color: #333;
         }
 
         .special-button:hover {
-            background-color: #FFB300;
+            background-color: #64532bff;
         }
 
         #errorSection {
