@@ -111,8 +111,8 @@ bool tempErrorLogged = false;
 bool triggerederror = false;
 bool wifiConnectionErrorLogged = false;
 
-const char* ssid = "Free Public Wi-Fi";
-const char* password = "2A0R0M4AAN";
+const char* ssid = "Your_WiFi_SSID";
+const char* password = "Your_WiFi_Password";
 std::vector<LogEntry> logBuffer;
 bool spiffsInitialized = false;
 WiFiUDP ntpUDP;

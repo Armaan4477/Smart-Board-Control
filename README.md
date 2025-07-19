@@ -11,6 +11,7 @@ This project is an ESP32-based aquarium control system that automates and monito
   - Air Pump (Relay 3)
   - Heater with temperature control (Relay 4)
 - **Scheduling**: Set detailed schedules with day-of-week support
+- **Temporary Scheduling**: Create one-time schedules that automatically expire after execution
 - **Temperature Monitoring**: Real-time temperature display with configurable thresholds
 - **Automatic Heater Control**: Maintain water temperature within set parameters
 - **Manual Override**: Physical switches for direct control
@@ -28,7 +29,7 @@ This project is an ESP32-based aquarium control system that automates and monito
 - Status LED
 - 4.7kΩ resistor (for temperature sensor)
 - Power supply
-- Aquarium equipment to control (pumps, lights, heater, etc.)
+- Aquarium equipment to control (Wavemaker, Lights, Air Pump, Heater)
 
 ## Wiring
 
@@ -79,8 +80,22 @@ Access the web interface by navigating to the ESP32's IP address in a web browse
 - Control equipment manually
 - View and set temperature thresholds
 - Create and manage schedules
+- Set up temporary one-time schedules
 - View system logs
 - Clear error states
+
+### Scheduling Options
+
+#### Regular Schedules
+- Create schedules that run on specified days of the week
+- Set start and end times for each schedule
+- Enable/disable schedules as needed
+
+#### Temporary Schedules
+- Create one-time schedules that automatically expire after execution
+- Set either start time, end time, or both
+- Each relay can have up to 2 temporary schedules at a time
+- Perfect for temporary overrides without modifying regular schedules
 
 ### Manual Overrides
 
