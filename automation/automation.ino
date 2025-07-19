@@ -745,7 +745,7 @@ WebServer server(80);
 
 WebSocketsServer webSocket = WebSocketsServer(81);
 
-const int MAX_TEMP_FAILURES = 3;
+const int MAX_TEMP_FAILURES = 8;
 int consecutiveTempFailures = 0;
 bool hasTempError = false;
 
@@ -2932,6 +2932,16 @@ const char tempschedules[] PROGMEM = R"html(
         .day-checkboxes input:checked ~ .checkmark:after {
             display: block;
         }
+        
+        .limitation-note {
+            margin-top: 10px;
+            padding: 10px;
+            background-color: #fff3cd;
+            border-left: 4px solid var(--warning-color);
+            color: #856404;
+            border-radius: 4px;
+            font-size: 0.9rem;
+        }
 
         @media (max-width: 768px) {
             .buttons {
@@ -2997,6 +3007,9 @@ const char tempschedules[] PROGMEM = R"html(
 
         <div class="schedule-form">
             <h3>Add Temporary Schedule (One-time only)</h3>
+            <div class="limitation-note">
+                <strong>Note:</strong> Each relay can have a maximum of 2 temporary schedules at a time.
+            </div>
             <label for="tempRelaySelect">Select Relay:</label>
             <select id="tempRelaySelect">
                 <option value="" disabled selected>Select Relay</option>
@@ -3067,7 +3080,12 @@ const char tempschedules[] PROGMEM = R"html(
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(requestBody)
         })
-        .then(response => response.ok ? response.json() : response.json().then(data => { throw new Error(data.error); }))
+        .then(response => {
+            if (!response.ok) {
+                return response.json().then(data => { throw new Error(data.error); });
+            }
+            return response.json();
+        })
         .then(() => { 
             loadTemporarySchedules(); 
             checkErrorStatus(); 
@@ -3944,6 +3962,9 @@ void loop() {
 }
 
 void emailLoop(void* parameter) {
+  unsigned long lastEmailAttempt = 0;
+  const unsigned long EMAIL_RETRY_INTERVAL = 30000;
+  
   for (;;) {
     handleTemperature();
 
@@ -3967,8 +3988,10 @@ void emailLoop(void* parameter) {
         attemptTimeSync();
       }
 
-      if (!startupemail) {
-        delay(1500);
+      unsigned long currentTime = millis();
+      
+      if (!startupemail && (currentTime - lastEmailAttempt > EMAIL_RETRY_INTERVAL)) {
+        lastEmailAttempt = currentTime;
         sendEmailWithLogs("Device is powered on");
         startupemail = true;
 
@@ -3978,7 +4001,8 @@ void emailLoop(void* parameter) {
         }
       }
 
-      if (pointemail) {
+      if (pointemail && (currentTime - lastEmailAttempt > EMAIL_RETRY_INTERVAL)) {
+        lastEmailAttempt = currentTime;
         sendEmailWithLogs("Status Check");
         pointemail = false;
       }
@@ -4617,13 +4641,21 @@ void sendEmailWithLogs(const String& trigger) {
     return;
   }
 
+  static bool emailInProgress = false;
+  if (emailInProgress) {
+    storeLogEntry("Email already in progress, skipping");
+    return;
+  }
+  
+  emailInProgress = true;
+
   sensors.requestTemperatures();
   float currentTempC = sensors.getTempC(sensorAddress);
   if (currentTempC != DEVICE_DISCONNECTED_C) {
     lastValidTemperature = currentTempC;
   }
 
-  MailClient.networkReconnect(true);
+  MailClient.networkReconnect(false);
   smtp.debug(0);
   smtp.setTCPTimeout(10000);
 
@@ -4668,40 +4700,80 @@ void sendEmailWithLogs(const String& trigger) {
   File logsFile = LittleFS.open("/logs.json", "r");
   if (!logsFile) {
     storeLogEntry("Failed to open logs file for email");
+    emailInProgress = false;
     return;
   }
 
-  String logsContent = "";
-  while (logsFile.available()) {
-    logsContent += (char)logsFile.read();
-  }
-  logsFile.close();
-
-  if (logsContent.length() == 0) {
+  size_t fileSize = logsFile.size();
+  if (fileSize == 0) {
     storeLogEntry("Logs file is empty");
+    logsFile.close();
+    emailInProgress = false;
     return;
   }
+
+  char* fileBuffer = new char[fileSize + 1];
+  
+  if (!fileBuffer) {
+    storeLogEntry("Failed to allocate memory for logs");
+    logsFile.close();
+    emailInProgress = false;
+    return;
+  }
+  
+  size_t bytesRead = logsFile.readBytes(fileBuffer, fileSize);
+  fileBuffer[bytesRead] = '\0';
+  logsFile.close();
 
   SMTP_Attachment att;
   att.descr.filename = "logs.json";
   att.descr.mime = "application/json";
   att.descr.transfer_encoding = Content_Transfer_Encoding::enc_base64;
-  att.blob.data = (uint8_t*)logsContent.c_str();
-  att.blob.size = logsContent.length();
+  att.blob.data = (uint8_t*)fileBuffer;
+  att.blob.size = bytesRead;
   message.addAttachment(att);
 
-  if (!smtp.connect(&config)) {
+  unsigned long emailStartTime = millis();
+  const unsigned long EMAIL_TIMEOUT = 20000;
+
+  bool connected = false;
+  try {
+    connected = smtp.connect(&config);
+  } catch (...) {
+    storeLogEntry("Exception during SMTP connection");
+    connected = false;
+  }
+
+  if (!connected) {
     storeLogEntry("Failed to connect to email server");
+    delete[] fileBuffer;
+    emailInProgress = false;
     return;
   }
 
-  if (!MailClient.sendMail(&smtp, &message)) {
+  bool sendSuccess = false;
+  try {
+    sendSuccess = MailClient.sendMail(&smtp, &message);
+  } catch (...) {
+    storeLogEntry("Exception during email sending");
+    sendSuccess = false;
+  }
+
+  if (!sendSuccess) {
     storeLogEntry("Failed to send email: " + smtp.errorReason());
   } else {
     storeLogEntry("Email sent successfully with logs");
   }
 
-  smtp.closeSession();
+  delete[] fileBuffer;
+  
+  try {
+    smtp.closeSession();
+  } catch (...) {
+    storeLogEntry("Exception during SMTP session close");
+  }
+  
+  emailInProgress = false;
 }
 
 void handleTemperature() {
@@ -4875,9 +4947,24 @@ void handleAddTemporarySchedule() {
         return;
       }
 
+      int relayNumber = doc["relay"].as<int>();
+      
+      int existingSchedulesCount = 0;
+      for (const auto& schedule : temporarySchedules) {
+        if (schedule.relayNumber == relayNumber) {
+          existingSchedulesCount++;
+        }
+      }
+      
+      if (existingSchedulesCount >= 2) {
+        server.send(400, "application/json", "{\"error\":\"Each relay can have a maximum of 2 temporary schedules\"}");
+        storeLogEntry("Add Temporary Schedule failed: Maximum schedules reached for relay " + String(relayNumber));
+        return;
+      }
+
       TemporarySchedule newSchedule;
       newSchedule.id = tempScheduleIdCounter++;
-      newSchedule.relayNumber = doc["relay"].as<int>();
+      newSchedule.relayNumber = relayNumber;
       newSchedule.enabled = true;
 
       if (doc.containsKey("onTime") && !doc["onTime"].isNull()) {
