@@ -30,7 +30,6 @@ void handleClearError();
 void handleGetErrorStatus();
 void handleOneClickLight();
 void handleTemperature();
-void templaunch();
 void emailLoop(void*);
 void mainLoop(void*);
 void sendEmailWithLogs(const String&);
@@ -170,7 +169,6 @@ const unsigned long BLINK_INTERVAL = 1000;
 bool blinkState = false;
 const char* authUsername = "admin";
 const char* authPassword = "12345678";
-const int MAX_TEMP_SCHEDULES = 5;
 
 #define ONE_WIRE_BUS 26
 OneWire oneWire(ONE_WIRE_BUS);
@@ -967,7 +965,7 @@ void setup() {
   loadSchedulesFromEEPROM();
   loadTemperatureSettings();
 
-  templaunch();
+  handleTemperature();
 
   webSocket.begin();
   webSocket.onEvent(webSocketEvent);
@@ -4796,34 +4794,24 @@ void handleTemperature() {
     } else {
       consecutiveTempFailures++;
       if (consecutiveTempFailures >= MAX_TEMP_FAILURES) {
-        if (!tempErrorLogged) {
-          storeLogEntry("Error: Temperature sensor failed " + String(consecutiveTempFailures) + " times");
-          tempErrorLogged = true;
-          sendEmailWithLogs("Temperature Sensor Error");
+        if (!temperatureData.empty() && temperatureData[0].enabled) {
+          if (!tempErrorLogged) {
+            storeLogEntry("Error: Temperature sensor failed " + String(consecutiveTempFailures) + " times");
+            tempErrorLogged = true;
+            sendEmailWithLogs("Temperature Sensor Error");
+          }
+          indicateError();
+          hasTempError = true;
+        } else {
+          if (!tempErrorLogged) {
+            storeLogEntry("Warning: Temperature sensor failed " + String(consecutiveTempFailures) + " times (heater control disabled)");
+            tempErrorLogged = true;
+          }
         }
-        indicateError();
-        hasTempError = true;
       }
     }
 
     lastTemp = millis();
-  }
-}
-
-void templaunch() {
-  sensors.requestTemperatures();
-  float tempC = sensors.getTempC(sensorAddress);
-
-  if (tempC != DEVICE_DISCONNECTED_C) {
-    currentTemp = tempC;
-    lastValidTemperature = tempC;
-    broadcastRelayStates();
-    consecutiveTempFailures = 0;
-    if (hasTempError) {
-      clearError();
-      hasTempError = false;
-      tempErrorLogged = false;
-    }
   }
 }
 
