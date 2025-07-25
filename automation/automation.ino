@@ -174,10 +174,9 @@ const char* authPassword = "12345678";
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
 DeviceAddress tempDeviceAddress;
-DeviceAddress sensorAddress = { 0x28, 0x59, 0x71, 0x80, 0xE3, 0xE1, 0x3C, 0x50 };
+DeviceAddress sensorAddress = { 0x28, 0xCB, 0xBA, 0x57, 0x04, 0xE1, 0x3C, 0xE7 };
 unsigned long lastTemp = 0;
-float currentTemp = 0;
-float lastValidTemperature = 0.0;
+float lastValidTemperature = 0;
 
 WiFiEventId_t wifiConnectHandler;
 
@@ -899,7 +898,6 @@ void setup() {
   pinMode(switch1Pin, INPUT_PULLUP);
   pinMode(switch2Pin, INPUT_PULLUP);
   pinMode(errorLEDPin, OUTPUT);
-  pinMode(ONE_WIRE_BUS, INPUT_PULLUP);
   digitalWrite(errorLEDPin, LOW);
 
   // Serial.begin(115200);
@@ -1407,17 +1405,27 @@ const char mainPage[] PROGMEM = R"html(
             3: false
         };
 
+        let relayNames = {
+            1: "WaveMaker",
+            2: "Light",
+            3: "Air Pump"
+        };
+
         let socket = new WebSocket('ws://' + window.location.hostname + ':81/');
 
-        socket.onopen = () => console.log('WebSocket connected');
+        socket.onopen = () => {
+            console.log('WebSocket connected');
+            // Request initial data
+            getInitialStates();
+        };
+        
         socket.onmessage = (event) => {
             try {
                 let data = JSON.parse(event.data);
                 
-                if (data.relay1Name) window.relay1Name = data.relay1Name;
-                if (data.relay2Name) window.relay2Name = data.relay2Name;
-                if (data.relay3Name) window.relay3Name = data.relay3Name;
-                if (data.relay4Name) window.relay4Name = data.relay4Name;
+                if (data.relay1Name) relayNames[1] = data.relay1Name;
+                if (data.relay2Name) relayNames[2] = data.relay2Name;
+                if (data.relay3Name) relayNames[3] = data.relay3Name;
                 
                 if (data.relay1 !== undefined) {
                     relayStates[1] = data.relay1;
@@ -1431,28 +1439,18 @@ const char mainPage[] PROGMEM = R"html(
                     relayStates[3] = data.relay3;
                     updateButtonStyle(3);
                 }
-                if (data.relay4 !== undefined) {
-                    updateHeaterStatus(data.relay4);
-                }
                 if (data.temperature !== undefined) {
                     document.getElementById('temperature').textContent = 
                         `Temperature: ${data.temperature} °C`;
-                    document.getElementById('current-temp-display').textContent = data.temperature;
-                }
-                if (data.minTemp !== undefined) {
-                    document.getElementById('min-temp-display').textContent = data.minTemp;
-                }
-                if (data.maxTemp !== undefined) {
-                    document.getElementById('max-temp-display').textContent = data.maxTemp;
-                }
-                if (data.tempControlEnabled !== undefined) {
-                    document.getElementById('temp-control-status').textContent = 
-                        data.tempControlEnabled ? 'Enabled' : 'Disabled';
+                    if (document.getElementById('current-temp-display')) {
+                        document.getElementById('current-temp-display').textContent = data.temperature;
+                    }
                 }
             } catch (e) {
                 console.error('WebSocket error:', e);
             }
         };
+        
         socket.onclose = () => checkErrorStatus();
         socket.onerror = () => checkErrorStatus();
 
@@ -1486,15 +1484,7 @@ const char mainPage[] PROGMEM = R"html(
             const btn = document.getElementById('btn' + relay);
             if (btn) {
                 btn.className = 'button ' + (relayStates[relay] ? 'on' : 'off');
-                let relayLabel = "Unknown";
-                
-                if (relay === 1 && window.relay1Name) relayLabel = window.relay1Name;
-                else if (relay === 2 && window.relay2Name) relayLabel = window.relay2Name;
-                else if (relay === 3 && window.relay3Name) relayLabel = window.relay3Name;
-                else if (relay === 1) relayLabel = "WaveMaker";
-                else if (relay === 2) relayLabel = "Light";
-                else if (relay === 3) relayLabel = "Air Pump";
-                
+                let relayLabel = relayNames[relay] || "Unknown";
                 btn.textContent = `${relayLabel} (${relayStates[relay] ? 'ON' : 'OFF'})`;
             }
         }
@@ -1504,9 +1494,10 @@ const char mainPage[] PROGMEM = R"html(
                 .then(response => response.json())
                 .then(data => { 
                     relayStates = data; 
-                    for(let relay in relayStates) updateButtonStyle(relay);
-                    if (data["4"] !== undefined) {
-                        updateHeaterStatus(data["4"]);
+                    for(let relay in relayStates) {
+                        if (relay <= 3) {
+                            updateButtonStyle(relay);
+                        }
                     }
                 })
                 .catch(() => checkErrorStatus());
@@ -1557,6 +1548,10 @@ const char mainPage[] PROGMEM = R"html(
         updateTime();
         getInitialStates();
         checkErrorStatus();
+        
+        document.getElementById('btn1').textContent = `${relayNames[1]} (OFF)`;
+        document.getElementById('btn2').textContent = `${relayNames[2]} (OFF)`;
+        document.getElementById('btn3').textContent = `${relayNames[3]} (OFF)`;
     </script>
 </body>
 </html>
@@ -4782,7 +4777,6 @@ void handleTemperature() {
     float tempC = sensors.getTempC(sensorAddress);
 
     if (tempC != DEVICE_DISCONNECTED_C) {
-      currentTemp = tempC;
       lastValidTemperature = tempC;
       broadcastRelayStates();
       consecutiveTempFailures = 0;
