@@ -881,7 +881,7 @@ void attemptTimeSync() {
 void onWifiConnected(WiFiEvent_t event, WiFiEventInfo_t info) {
   if (!wifiConnectionErrorLogged) {
     storeLogEntry("Connected to WiFi. IP: " + WiFi.localIP().toString());
-    wifiConnectionErrorLogged = false;  // Reset the error flag on successful connection
+    wifiConnectionErrorLogged = false;
   }
   attemptTimeSync();
 }
@@ -897,6 +897,7 @@ void setup() {
   digitalWrite(relay4, HIGH);
   pinMode(switch1Pin, INPUT_PULLUP);
   pinMode(switch2Pin, INPUT_PULLUP);
+  pinMode(ONE_WIRE_BUS, INPUT_PULLUP);
   pinMode(errorLEDPin, OUTPUT);
   digitalWrite(errorLEDPin, LOW);
 
@@ -1066,16 +1067,29 @@ void saveTemperatureSettings() {
 void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length) {
   switch (type) {
     case WStype_DISCONNECTED:
-      //storeLogEntry("WebSocket " + String(num) + " Disconnected!");
+      if (length > 0) {
+        storeLogEntry("WebSocket " + String(num) + " Disconnected");
+      }
       break;
     case WStype_CONNECTED:
       {
         IPAddress ip = webSocket.remoteIP(num);
-        storeLogEntry("WebSocket " + String(num) + " Connected from " + ip.toString() + " url: " + String((char*)payload));
+        storeLogEntry("WebSocket " + String(num) + " Connected from " + ip.toString());
 
-        String message = "{\"relay1\":" + String(relay1State || overrideRelay1) + ",\"relay2\":" + String(relay2State || overrideRelay2) + ",\"relay3\":" + String(relay3State || overrideRelay1) + ",\"temperature\":" + String(lastValidTemperature, 1) + ",\"relay1Name\":\"WaveMaker\"" + ",\"relay2Name\":\"Light\"" + ",\"relay3Name\":\"Air Pump\"}";
+        String message = "{\"relay1\":" + String(relay1State || overrideRelay1) + 
+                        ",\"relay2\":" + String(relay2State || overrideRelay2) + 
+                        ",\"relay3\":" + String(relay3State || overrideRelay1) + 
+                        ",\"temperature\":" + String(lastValidTemperature, 1) + 
+                        ",\"relay1Name\":\"WaveMaker\"" + 
+                        ",\"relay2Name\":\"Light\"" + 
+                        ",\"relay3Name\":\"Air Pump\"}";
         webSocket.sendTXT(num, message);
       }
+      break;
+    case WStype_TEXT:
+      break;
+    case WStype_ERROR:
+      storeLogEntry("WebSocket " + String(num) + " Error");
       break;
     default:
       break;
@@ -1411,48 +1425,101 @@ const char mainPage[] PROGMEM = R"html(
             3: "Air Pump"
         };
 
-        let socket = new WebSocket('ws://' + window.location.hostname + ':81/');
+        let socket = null;
+        let reconnectAttempts = 0;
+        const maxReconnectAttempts = 5;
+        let reconnectInterval = 1000; // Start with 1 second
+        const maxReconnectInterval = 30000; // Max 30 seconds
 
-        socket.onopen = () => {
-            console.log('WebSocket connected');
-            // Request initial data
-            getInitialStates();
-        };
-        
-        socket.onmessage = (event) => {
-            try {
-                let data = JSON.parse(event.data);
-                
-                if (data.relay1Name) relayNames[1] = data.relay1Name;
-                if (data.relay2Name) relayNames[2] = data.relay2Name;
-                if (data.relay3Name) relayNames[3] = data.relay3Name;
-                
-                if (data.relay1 !== undefined) {
-                    relayStates[1] = data.relay1;
-                    updateButtonStyle(1);
-                }
-                if (data.relay2 !== undefined) {
-                    relayStates[2] = data.relay2;
-                    updateButtonStyle(2);
-                }
-                if (data.relay3 !== undefined) {
-                    relayStates[3] = data.relay3;
-                    updateButtonStyle(3);
-                }
-                if (data.temperature !== undefined) {
-                    document.getElementById('temperature').textContent = 
-                        `Temperature: ${data.temperature} °C`;
-                    if (document.getElementById('current-temp-display')) {
-                        document.getElementById('current-temp-display').textContent = data.temperature;
-                    }
-                }
-            } catch (e) {
-                console.error('WebSocket error:', e);
+        function connectWebSocket() {
+            if (socket && (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN)) {
+                return; // Already connected or connecting
             }
-        };
+            
+            console.log('Attempting WebSocket connection...');
+            socket = new WebSocket('ws://' + window.location.hostname + ':81/');
+            
+            socket.onopen = () => {
+                console.log('WebSocket connected');
+                reconnectAttempts = 0;
+                reconnectInterval = 1000; // Reset interval
+                // Request initial data
+                getInitialStates();
+            };
+            
+            socket.onmessage = (event) => {
+                try {
+                    let data = JSON.parse(event.data);
+                    
+                    if (data.relay1Name) relayNames[1] = data.relay1Name;
+                    if (data.relay2Name) relayNames[2] = data.relay2Name;
+                    if (data.relay3Name) relayNames[3] = data.relay3Name;
+                    
+                    if (data.relay1 !== undefined) {
+                        relayStates[1] = data.relay1;
+                        updateButtonStyle(1);
+                    }
+                    if (data.relay2 !== undefined) {
+                        relayStates[2] = data.relay2;
+                        updateButtonStyle(2);
+                    }
+                    if (data.relay3 !== undefined) {
+                        relayStates[3] = data.relay3;
+                        updateButtonStyle(3);
+                    }
+                    if (data.temperature !== undefined) {
+                        document.getElementById('temperature').textContent = 
+                            `Temperature: ${data.temperature} °C`;
+                        if (document.getElementById('current-temp-display')) {
+                            document.getElementById('current-temp-display').textContent = data.temperature;
+                        }
+                    }
+                } catch (e) {
+                    console.error('WebSocket message parsing error:', e);
+                }
+            };
+            
+            socket.onclose = (event) => {
+                console.log('WebSocket disconnected:', event.code, event.reason);
+                socket = null;
+                scheduleReconnect();
+                checkErrorStatus();
+            };
+            
+            socket.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                checkErrorStatus();
+            };
+        }
+
+        function scheduleReconnect() {
+        if (reconnectAttempts >= maxReconnectAttempts) {
+            console.log('Max reconnection attempts reached');
+            return;
+        }
         
-        socket.onclose = () => checkErrorStatus();
-        socket.onerror = () => checkErrorStatus();
+        reconnectAttempts++;
+        console.log(`Scheduling reconnect attempt ${reconnectAttempts} in ${reconnectInterval}ms`);
+        
+        setTimeout(() => {
+            connectWebSocket();
+        }, reconnectInterval);
+        
+        // Exponential backoff
+        reconnectInterval = Math.min(reconnectInterval * 1.5, maxReconnectInterval);
+    }
+
+    // Initialize connection
+    connectWebSocket();
+
+    // Fallback: try to reconnect every 30 seconds if disconnected
+    setInterval(() => {
+        if (!socket || socket.readyState === WebSocket.CLOSED) {
+            console.log('WebSocket check: attempting reconnection');
+            reconnectAttempts = 0; // Reset attempts for periodic check
+            connectWebSocket();
+        }
+    }, 30000);
 
         function updateTime() {
             fetch('/time')
@@ -1490,6 +1557,10 @@ const char mainPage[] PROGMEM = R"html(
         }
 
         function getInitialStates() {
+            if (socket && socket.readyState === WebSocket.OPEN) {
+                return;
+            }
+
             fetch('/relay/status')
                 .then(response => response.json())
                 .then(data => { 
@@ -1499,8 +1570,18 @@ const char mainPage[] PROGMEM = R"html(
                             updateButtonStyle(relay);
                         }
                     }
+                    if (data.temperature !== undefined) {
+                        document.getElementById('temperature').textContent = 
+                            `Temperature: ${data.temperature} °C`;
+                        if (document.getElementById('current-temp-display')) {
+                            document.getElementById('current-temp-display').textContent = data.temperature;
+                        }
+                    }
                 })
-                .catch(() => checkErrorStatus());
+                .catch(error => {
+                    console.error('Failed to get initial states:', error);
+                    checkErrorStatus();
+                });
         }
 
         function checkErrorStatus() {
@@ -4517,7 +4598,8 @@ void handleRelayStatus() {
   json += "\"1\":" + String(relay1State || overrideRelay1) + ",";
   json += "\"2\":" + String(relay2State || overrideRelay2) + ",";
   json += "\"3\":" + String(relay3State || overrideRelay1) + ",";
-  json += "\"4\":" + String(relay4State) + "}";
+  json += "\"4\":" + String(relay4State) + ",";
+  json += "\"temperature\":" + String(lastValidTemperature, 1) + "}";
   server.send(200, "application/json", json);
 }
 
