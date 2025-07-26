@@ -2477,6 +2477,23 @@ const char tempctrl[] PROGMEM = R"html(
             transition: var(--transition);
         }
 
+        .changed-indicator {
+            background-color: #fff3cd !important;
+            border-left: 4px solid var(--warning-color) !important;
+        }
+
+        .save-button.changes-pending {
+            background-color: var(--warning-color) !important;
+            color: #333 !important;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+            100% { transform: scale(1); }
+        }
+
         @media (max-width: 768px) {
             .container {
                 padding: 10px;
@@ -2620,7 +2637,7 @@ const char tempctrl[] PROGMEM = R"html(
             </div>
             
             <div class="temp-buttons">
-                <button class="save-button" onclick="saveTemperatureSettings()">Save Settings</button>
+                <button class="save-button" id="save-temp-settings" onclick="saveTemperatureSettings()">Save Settings</button>
             </div>
         </div>
 
@@ -2643,12 +2660,20 @@ const char tempctrl[] PROGMEM = R"html(
             </div>
             
             <div class="temp-buttons">
-                <button class="save-button" onclick="saveCalibrationSettings()">Save Calibration</button>
+                <button class="save-button" id="save-calibration-settings" onclick="saveCalibrationSettings()">Save Calibration</button>
             </div>
         </div>
     </div>
     <script>
         let socket = new WebSocket('ws://' + window.location.hostname + ':81/');
+        
+        // Track user changes and original values
+        let userChangedSettings = false;
+        let userChangedCalibration = false;
+        let originalSettings = {};
+        let originalCalibration = {};
+        let lastSavedSettings = {};
+        let lastSavedCalibration = {};
 
         socket.onopen = () => {
             console.log('WebSocket connected');
@@ -2687,6 +2712,11 @@ const char tempctrl[] PROGMEM = R"html(
         socket.onerror = () => console.log('WebSocket error');
 
         function goBack() {
+            if (userChangedSettings || userChangedCalibration) {
+                if (!confirm('You have unsaved changes. Are you sure you want to leave?')) {
+                    return;
+                }
+            }
             window.history.back();
         }
 
@@ -2695,21 +2725,95 @@ const char tempctrl[] PROGMEM = R"html(
             document.getElementById('max-temp-value').textContent = document.getElementById('max-temp-slider').value;
         }
 
+        function checkForSettingsChanges() {
+            const currentMinTemp = parseInt(document.getElementById('min-temp-slider').value);
+            const currentMaxTemp = parseInt(document.getElementById('max-temp-slider').value);
+            const currentEnabled = document.getElementById('temp-control-toggle').checked;
+            
+            const hasChanges = (
+                currentMinTemp !== lastSavedSettings.minTemp ||
+                currentMaxTemp !== lastSavedSettings.maxTemp ||
+                currentEnabled !== lastSavedSettings.enabled
+            );
+            
+            userChangedSettings = hasChanges;
+            updateSettingsUI();
+        }
+
+        function checkForCalibrationChanges() {
+            const currentInternal = parseFloat(document.getElementById('internal-calibration').value);
+            const currentExternal = parseFloat(document.getElementById('external-calibration').value);
+            
+            const hasChanges = (
+                Math.abs(currentInternal - lastSavedCalibration.internalOffset) > 0.01 ||
+                Math.abs(currentExternal - lastSavedCalibration.externalOffset) > 0.01
+            );
+            
+            userChangedCalibration = hasChanges;
+            updateCalibrationUI();
+        }
+
+        function updateSettingsUI() {
+            const saveButton = document.getElementById('save-temp-settings');
+            const tempControl = document.querySelector('.temp-control');
+            
+            if (userChangedSettings) {
+                saveButton.classList.add('changes-pending');
+                saveButton.textContent = 'Save Changes';
+                tempControl.classList.add('changed-indicator');
+            } else {
+                saveButton.classList.remove('changes-pending');
+                saveButton.textContent = 'Save Settings';
+                tempControl.classList.remove('changed-indicator');
+            }
+        }
+
+        function updateCalibrationUI() {
+            const saveButton = document.getElementById('save-calibration-settings');
+            const calibrationSection = document.querySelector('.calibration-section');
+            
+            if (userChangedCalibration) {
+                saveButton.classList.add('changes-pending');
+                saveButton.textContent = 'Save Changes';
+                calibrationSection.classList.add('changed-indicator');
+            } else {
+                saveButton.classList.remove('changes-pending');
+                saveButton.textContent = 'Save Calibration';
+                calibrationSection.classList.remove('changed-indicator');
+            }
+        }
+
         function loadTemperatureSettings() {
             fetch('/temperature/settings')
                 .then(response => response.json())
                 .then(data => {
-                    document.getElementById('min-temp-slider').value = data.minTemp;
-                    document.getElementById('max-temp-slider').value = data.maxTemp;
-                    document.getElementById('temp-control-toggle').checked = data.enabled;
+                    // Only update if user hasn't made changes
+                    if (!userChangedSettings) {
+                        document.getElementById('min-temp-slider').value = data.minTemp;
+                        document.getElementById('max-temp-slider').value = data.maxTemp;
+                        document.getElementById('temp-control-toggle').checked = data.enabled;
+                        
+                        // Update display values
+                        document.getElementById('min-temp-value').textContent = data.minTemp;
+                        document.getElementById('max-temp-value').textContent = data.maxTemp;
+                    }
                     
-                    // Update display values
-                    document.getElementById('min-temp-value').textContent = data.minTemp;
-                    document.getElementById('max-temp-value').textContent = data.maxTemp;
+                    // Always update the saved state and display values (these don't affect user inputs)
+                    lastSavedSettings = {
+                        minTemp: data.minTemp,
+                        maxTemp: data.maxTemp,
+                        enabled: data.enabled
+                    };
+                    
                     document.getElementById('min-temp-display').textContent = data.minTemp;
                     document.getElementById('max-temp-display').textContent = data.maxTemp;
                     document.getElementById('current-temp-display').textContent = data.currentTemp;
                     document.getElementById('temp-control-status').textContent = data.enabled ? 'Enabled' : 'Disabled';
+                    
+                    // Initialize original settings on first load
+                    if (Object.keys(originalSettings).length === 0) {
+                        originalSettings = { ...lastSavedSettings };
+                    }
                 })
                 .catch(error => {
                     console.error('Error loading temperature settings:', error);
@@ -2745,6 +2849,9 @@ const char tempctrl[] PROGMEM = R"html(
             })
             .then(data => {
                 alert('Temperature settings saved successfully!');
+                lastSavedSettings = { ...settings };
+                userChangedSettings = false;
+                updateSettingsUI();
                 loadTemperatureSettings();
             })
             .catch(error => {
@@ -2756,8 +2863,22 @@ const char tempctrl[] PROGMEM = R"html(
             fetch('/calibration/settings')
                 .then(response => response.json())
                 .then(data => {
-                    document.getElementById('internal-calibration').value = data.internalOffset;
-                    document.getElementById('external-calibration').value = data.externalOffset;
+                    // Only update if user hasn't made changes
+                    if (!userChangedCalibration) {
+                        document.getElementById('internal-calibration').value = data.internalOffset;
+                        document.getElementById('external-calibration').value = data.externalOffset;
+                    }
+                    
+                    // Always update the saved state
+                    lastSavedCalibration = {
+                        internalOffset: data.internalOffset,
+                        externalOffset: data.externalOffset
+                    };
+                    
+                    // Initialize original calibration on first load
+                    if (Object.keys(originalCalibration).length === 0) {
+                        originalCalibration = { ...lastSavedCalibration };
+                    }
                 })
                 .catch(error => {
                     console.error('Error loading calibration settings:', error);
@@ -2791,6 +2912,10 @@ const char tempctrl[] PROGMEM = R"html(
             })
             .then(data => {
                 alert('Calibration settings saved successfully!');
+                // Update saved state and reset change tracking
+                lastSavedCalibration = { ...settings };
+                userChangedCalibration = false;
+                updateCalibrationUI();
                 loadCalibrationSettings();
             })
             .catch(error => {
@@ -2820,15 +2945,37 @@ const char tempctrl[] PROGMEM = R"html(
                     console.error('Error getting initial heater status:', error);
                 });
         }
-                
-        document.getElementById('min-temp-slider').addEventListener('input', updateTemperatureSliders);
-        document.getElementById('max-temp-slider').addEventListener('input', updateTemperatureSliders);
+        
+        document.getElementById('min-temp-slider').addEventListener('input', () => {
+            updateTemperatureSliders();
+            checkForSettingsChanges();
+        });
+        
+        document.getElementById('max-temp-slider').addEventListener('input', () => {
+            updateTemperatureSliders();
+            checkForSettingsChanges();
+        });
+        
+        document.getElementById('temp-control-toggle').addEventListener('change', checkForSettingsChanges);
+        
+        document.getElementById('internal-calibration').addEventListener('input', checkForCalibrationChanges);
+        document.getElementById('external-calibration').addEventListener('input', checkForCalibrationChanges);
 
+        // Initialize everything
         loadTemperatureSettings();
         loadCalibrationSettings();
         getInitialHeaterStatus();
         
-        setInterval(loadTemperatureSettings, 10000);
+        setInterval(() => {
+            // Only refresh if user hasn't made changes
+            if (!userChangedSettings) {
+                loadTemperatureSettings();
+            }
+            if (!userChangedCalibration) {
+                loadCalibrationSettings();
+            }
+        }, 10000);
+        
         setInterval(getInitialHeaterStatus, 5000);
     </script>
 </body>
