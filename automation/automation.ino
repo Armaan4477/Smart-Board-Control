@@ -61,6 +61,7 @@ void saveCalibrationSettings();
 void handleGetCalibrationSettings();
 void handleSaveCalibrationSettings();
 void tempTemperature();
+void handleGetRawTemperatureData();
 
 struct Schedule {
   int id;
@@ -985,6 +986,7 @@ void setup() {
   server.on("/temp-schedule/delete", HTTP_DELETE, handleDeleteTemporarySchedule);
   server.on("/calibration/settings", HTTP_GET, handleGetCalibrationSettings);
   server.on("/calibration/save", HTTP_POST, handleSaveCalibrationSettings);
+  server.on("/temperature/raw", HTTP_GET, handleGetRawTemperatureData);
   server.begin();
   EEPROM.begin(EEPROM_SIZE);
   loadSchedulesFromEEPROM();
@@ -2316,7 +2318,7 @@ const char tempctrl[] PROGMEM = R"html(
         }
         
         .temp-control .save-button {
-            padding: 10px 20px;
+            padding: 12px 24px;
             background-color: var(--primary-color);
             color: white;
             border: none;
@@ -2324,11 +2326,18 @@ const char tempctrl[] PROGMEM = R"html(
             cursor: pointer;
             transition: var(--transition);
             font-weight: 500;
+            font-size: 1rem;
+            box-shadow: var(--shadow);
         }
         
         .temp-control .save-button:hover {
             background-color: var(--primary-dark);
             transform: translateY(-2px);
+            box-shadow: 0 4px 10px rgba(0,0,0,0.15);
+        }
+
+        .temp-control .save-button:active {
+            transform: translateY(1px);
         }
         
         .temp-control .temp-values-display {
@@ -2465,6 +2474,91 @@ const char tempctrl[] PROGMEM = R"html(
             color: #1565c0;
         }
 
+        .raw-data-section {
+            background-color: var(--card-color);
+            padding: 25px;
+            border-radius: var(--border-radius);
+            box-shadow: var(--shadow);
+            margin-bottom: 25px;
+            transition: var(--transition);
+        }
+
+        .raw-data-section:hover {
+            box-shadow: 0 5px 15px rgba(0,0,0,0.15);
+        }
+
+        .raw-data-section h3 {
+            color: var(--primary-color);
+            margin-bottom: 15px;
+            font-size: 1.5rem;
+            border-bottom: 2px solid var(--primary-light);
+            padding-bottom: 10px;
+        }
+
+        .raw-data-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        .raw-data-item {
+            text-align: center;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: var(--border-radius);
+            transition: var(--transition);
+        }
+
+        .raw-data-item:hover {
+            background-color: #e9ecef;
+        }
+
+        .raw-data-label {
+            font-size: 1rem;
+            color: var(--text-light);
+            margin-bottom: 8px;
+            font-weight: 500;
+        }
+
+        .raw-data-value {
+            font-size: 1.8rem;
+            font-weight: bold;
+            color: var(--accent-color);
+        }
+
+        .raw-data-item.internal {
+            border-left: 4px solid var(--success-color);
+        }
+
+        .raw-data-item.external {
+            border-left: 4px solid var(--accent-color);
+        }
+
+        .calibration-save-button {
+            width: 100%;
+            padding: 12px 24px;
+            background-color: var(--accent-color);
+            color: white;
+            border: none;
+            border-radius: var(--border-radius);
+            cursor: pointer;
+            transition: var(--transition);
+            font-weight: 500;
+            font-size: 1rem;
+            box-shadow: var(--shadow);
+        }
+
+        .calibration-save-button:hover {
+            background-color: #0288D1;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 10px rgba(0,0,0,0.15);
+        }
+
+        .calibration-save-button:active {
+            transform: translateY(1px);
+        }
+
         #temperature {
             font-size: 2rem;
             margin: 20px 0;
@@ -2483,6 +2577,12 @@ const char tempctrl[] PROGMEM = R"html(
         }
 
         .save-button.changes-pending {
+            background-color: var(--warning-color) !important;
+            color: #333 !important;
+            animation: pulse 2s infinite;
+        }
+
+        .calibration-save-button.changes-pending {
             background-color: var(--warning-color) !important;
             color: #333 !important;
             animation: pulse 2s infinite;
@@ -2557,17 +2657,38 @@ const char tempctrl[] PROGMEM = R"html(
                 gap: 15px;
             }
 
+            .raw-data-grid {
+                grid-template-columns: 1fr;
+                gap: 15px;
+            }
+
             .calibration-section {
+                padding: 15px;
+            }
+
+            .raw-data-section {
                 padding: 15px;
             }
 
             .calibration-section h3 {
                 font-size: 1.3rem;
             }
+
+            .raw-data-section h3 {
+                font-size: 1.3rem;
+            }
+
+            .raw-data-value {
+                font-size: 1.5rem;
+            }
             
             #temperature {
                 font-size: 1.5rem;
                 padding: 15px;
+            }
+
+            .calibration-save-button {
+                padding: 12px;
             }
         }
     </style>
@@ -2641,26 +2762,40 @@ const char tempctrl[] PROGMEM = R"html(
             </div>
         </div>
 
+        <div class="raw-data-section">
+            <h3>Raw Sensor Data</h3>
+            <div class="raw-data-grid">
+                <div class="raw-data-item internal">
+                    <div class="raw-data-label">Internal Sensor (Raw)</div>
+                    <div class="raw-data-value" id="internal-raw-temp">--</div>
+                </div>
+                <div class="raw-data-item external">
+                    <div class="raw-data-label">External Sensor (Raw)</div>
+                    <div class="raw-data-value" id="external-raw-temp">--</div>
+                </div>
+            </div>
+        </div>
+
         <div class="calibration-section">
             <h3>Sensor Calibration</h3>
             <div class="calibration-note">
                 Calibration allows you to adjust sensor readings to match a reference thermometer. 
-                Positive values increase the reading, negative values decrease it. Range: -10°C to +10°C
+                Positive values increase the reading, negative values decrease it. Range: -10.00°C to +10.00°C
             </div>
             
             <div class="calibration-grid">
                 <div class="calibration-item">
                     <label for="internal-calibration">Internal Sensor Offset (°C):</label>
-                    <input type="number" id="internal-calibration" min="-10" max="10" step="0.1" value="0.0">
+                    <input type="number" id="internal-calibration" min="-10" max="10" step="0.01" value="0.00">
                 </div>
                 <div class="calibration-item">
                     <label for="external-calibration">External Sensor Offset (°C):</label>
-                    <input type="number" id="external-calibration" min="-10" max="10" step="0.1" value="0.0">
+                    <input type="number" id="external-calibration" min="-10" max="10" step="0.01" value="0.00">
                 </div>
             </div>
             
             <div class="temp-buttons">
-                <button class="save-button" id="save-calibration-settings" onclick="saveCalibrationSettings()">Save Calibration</button>
+                <button class="calibration-save-button" id="save-calibration-settings" onclick="saveCalibrationSettings()">Save Calibration</button>
             </div>
         </div>
     </div>
@@ -2692,6 +2827,12 @@ const char tempctrl[] PROGMEM = R"html(
                     document.getElementById('temperature').textContent = 
                         `Temperature: ${data.temperature} °C`;
                     document.getElementById('current-temp-display').textContent = data.temperature;
+                }
+                if (data.internalRawTemp !== undefined) {
+                    document.getElementById('internal-raw-temp').textContent = data.internalRawTemp.toFixed(2) + ' °C';
+                }
+                if (data.externalRawTemp !== undefined) {
+                    document.getElementById('external-raw-temp').textContent = data.externalRawTemp.toFixed(2) + ' °C';
                 }
                 if (data.minTemp !== undefined) {
                     document.getElementById('min-temp-display').textContent = data.minTemp;
@@ -2745,8 +2886,8 @@ const char tempctrl[] PROGMEM = R"html(
             const currentExternal = parseFloat(document.getElementById('external-calibration').value);
             
             const hasChanges = (
-                Math.abs(currentInternal - lastSavedCalibration.internalOffset) > 0.01 ||
-                Math.abs(currentExternal - lastSavedCalibration.externalOffset) > 0.01
+                Math.abs(currentInternal - lastSavedCalibration.internalOffset) > 0.001 ||
+                Math.abs(currentExternal - lastSavedCalibration.externalOffset) > 0.001
             );
             
             userChangedCalibration = hasChanges;
@@ -2865,8 +3006,8 @@ const char tempctrl[] PROGMEM = R"html(
                 .then(data => {
                     // Only update if user hasn't made changes
                     if (!userChangedCalibration) {
-                        document.getElementById('internal-calibration').value = data.internalOffset;
-                        document.getElementById('external-calibration').value = data.externalOffset;
+                        document.getElementById('internal-calibration').value = data.internalOffset.toFixed(2);
+                        document.getElementById('external-calibration').value = data.externalOffset.toFixed(2);
                     }
                     
                     // Always update the saved state
@@ -2945,6 +3086,22 @@ const char tempctrl[] PROGMEM = R"html(
                     console.error('Error getting initial heater status:', error);
                 });
         }
+
+        function loadRawSensorData() {
+            fetch('/temperature/raw')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.internalRaw !== undefined) {
+                        document.getElementById('internal-raw-temp').textContent = data.internalRaw.toFixed(2) + ' °C';
+                    }
+                    if (data.externalRaw !== undefined) {
+                        document.getElementById('external-raw-temp').textContent = data.externalRaw.toFixed(2) + ' °C';
+                    }
+                })
+                .catch(error => {
+                    console.error('Error loading raw sensor data:', error);
+                });
+        }
         
         document.getElementById('min-temp-slider').addEventListener('input', () => {
             updateTemperatureSliders();
@@ -2965,15 +3122,16 @@ const char tempctrl[] PROGMEM = R"html(
         loadTemperatureSettings();
         loadCalibrationSettings();
         getInitialHeaterStatus();
+        loadRawSensorData();
         
         setInterval(() => {
-            // Only refresh if user hasn't made changes
             if (!userChangedSettings) {
                 loadTemperatureSettings();
             }
             if (!userChangedCalibration) {
                 loadCalibrationSettings();
             }
+            loadRawSensorData();
         }, 10000);
         
         setInterval(getInitialHeaterStatus, 5000);
@@ -4788,7 +4946,20 @@ void deactivateRelay(int relayNum, bool manual) {
 }
 
 void broadcastRelayStates() {
-  String message = "{\"relay1\":" + String(relay1State || overrideRelay1) + ",\"relay2\":" + String(relay2State || overrideRelay2) + ",\"relay3\":" + String(relay3State || overrideRelay1) + ",\"relay4\":" + String(relay4State) + ",\"temperature\":" + String(lastValidTemperature, 1) + ",\"externalTemperature\":" + String(lastValidExternalTemperature, 1);
+  sensors.requestTemperatures();
+  externalSensors.requestTemperatures();
+  
+  float internalRaw = sensors.getTempC(sensorAddress);
+  float externalRaw = externalSensors.getTempC(externalSensorAddress);
+  
+  if (internalRaw == DEVICE_DISCONNECTED_C) {
+    internalRaw = lastValidTemperature - sensorCalibration.internalOffset;
+  }
+  if (externalRaw == DEVICE_DISCONNECTED_C) {
+    externalRaw = lastValidExternalTemperature - sensorCalibration.externalOffset;
+  }
+
+  String message = "{\"relay1\":" + String(relay1State || overrideRelay1) + ",\"relay2\":" + String(relay2State || overrideRelay2) + ",\"relay3\":" + String(relay3State || overrideRelay1) + ",\"relay4\":" + String(relay4State) + ",\"temperature\":" + String(lastValidTemperature, 1) + ",\"externalTemperature\":" + String(lastValidExternalTemperature, 1) + ",\"internalRawTemp\":" + String(internalRaw, 2) + ",\"externalRawTemp\":" + String(externalRaw, 2);
 
   if (!temperatureData.empty()) {
     message += ",\"tempControlEnabled\":" + String(temperatureData[0].enabled ? "true" : "false") + ",\"minTemp\":" + String(temperatureData[0].minTemp) + ",\"maxTemp\":" + String(temperatureData[0].maxTemp);
@@ -5701,4 +5872,26 @@ void tempTemperature() {
     if (externalTempC != DEVICE_DISCONNECTED_C) {
         lastValidExternalTemperature = externalTempC + sensorCalibration.externalOffset;
     }
+}
+
+void handleGetRawTemperatureData() {
+  sensors.requestTemperatures();
+  externalSensors.requestTemperatures();
+  
+  float internalRaw = sensors.getTempC(sensorAddress);
+  float externalRaw = externalSensors.getTempC(externalSensorAddress);
+  
+  if (internalRaw == DEVICE_DISCONNECTED_C) {
+    internalRaw = lastValidTemperature - sensorCalibration.internalOffset;
+  }
+  if (externalRaw == DEVICE_DISCONNECTED_C) {
+    externalRaw = lastValidExternalTemperature - sensorCalibration.externalOffset;
+  }
+  
+  String json = "{";
+  json += "\"internalRaw\":" + String(internalRaw, 2) + ",";
+  json += "\"externalRaw\":" + String(externalRaw, 2);
+  json += "}";
+  
+  server.send(200, "application/json", json);
 }
