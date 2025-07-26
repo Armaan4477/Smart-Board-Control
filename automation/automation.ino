@@ -894,10 +894,9 @@ void setup() {
   digitalWrite(relay1, HIGH);
   digitalWrite(relay2, HIGH);
   digitalWrite(relay3, HIGH);
-  digitalWrite(relay4, HIGH);
+  digitalWrite(relay4, LOW);
   pinMode(switch1Pin, INPUT_PULLUP);
   pinMode(switch2Pin, INPUT_PULLUP);
-  pinMode(ONE_WIRE_BUS, INPUT_PULLUP);
   pinMode(errorLEDPin, OUTPUT);
   digitalWrite(errorLEDPin, LOW);
 
@@ -4288,7 +4287,7 @@ void activateRelay(int relayNum, bool manual) {
     case 3:
       digitalWrite(relay3, LOW);
       relay3State = true;
-      storeLogEntry("Relay 3 (Air Pump) activated.");
+      storeLogEntry("Relay 3 activated.");
       break;
   }
   broadcastRelayStates();
@@ -4314,7 +4313,7 @@ void deactivateRelay(int relayNum, bool manual) {
     case 3:
       digitalWrite(relay3, HIGH);
       relay3State = false;
-      storeLogEntry("Relay 3 (Air Pump) deactivated.");
+      storeLogEntry("Relay 3 deactivated.");
       break;
   }
   broadcastRelayStates();
