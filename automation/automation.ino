@@ -1217,16 +1217,57 @@ const char mainPage[] PROGMEM = R"html(
             margin: 5px 0;
         }
 
-        #temperature {
-            font-size: 2rem;
+        .temperature-container {
             margin: 20px 0;
-            text-align: center;
             padding: 20px;
             background-color: var(--card-color);
             border-radius: var(--border-radius);
             box-shadow: var(--shadow);
-            color: var(--primary-color);
             transition: var(--transition);
+        }
+
+        .temperature-container:hover {
+            box-shadow: 0 5px 15px rgba(0,0,0,0.15);
+        }
+
+        .temperature-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            align-items: center;
+        }
+
+        .temperature-item {
+            text-align: center;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: var(--border-radius);
+            transition: var(--transition);
+        }
+
+        .temperature-item:hover {
+            background-color: #e9ecef;
+        }
+
+        .temperature-label {
+            font-size: 1rem;
+            color: var(--text-light);
+            margin-bottom: 8px;
+            font-weight: 500;
+        }
+
+        .temperature-value {
+            font-size: 1.8rem;
+            font-weight: bold;
+            color: var(--primary-color);
+        }
+
+        .temperature-item.internal {
+            border-left: 4px solid var(--success-color);
+        }
+
+        .temperature-item.external {
+            border-left: 4px solid var(--accent-color);
         }
 
         .control-section {
@@ -1357,6 +1398,15 @@ const char mainPage[] PROGMEM = R"html(
             .navigation-buttons {
                 grid-template-columns: 1fr;
             }
+
+            .temperature-grid {
+                grid-template-columns: 1fr;
+                gap: 15px;
+            }
+
+            .temperature-value {
+                font-size: 1.5rem;
+            }
             
             #time {
                 font-size: 2rem;
@@ -1392,8 +1442,19 @@ const char mainPage[] PROGMEM = R"html(
             <div id="day">Loading day...</div>
             <div id="date">Loading date...</div>
         </div>
-        <div id="temperature">Internal Temperature: -- °C</div>
-        <div id="externalTemperature">External Temperature: -- °C</div>
+        
+        <div class="temperature-container">
+            <div class="temperature-grid">
+                <div class="temperature-item internal">
+                    <div class="temperature-label">Internal Temperature</div>
+                    <div class="temperature-value" id="temperature">-- °C</div>
+                </div>
+                <div class="temperature-item external">
+                    <div class="temperature-label">External Temperature</div>
+                    <div class="temperature-value" id="externalTemperature">-- °C</div>
+                </div>
+            </div>
+        </div>
 
         <div id="errorSection">
             <p>Error detected!</p>
@@ -1476,15 +1537,13 @@ const char mainPage[] PROGMEM = R"html(
                         updateButtonStyle(3);
                     }
                     if (data.temperature !== undefined) {
-                        document.getElementById('temperature').textContent = 
-                            `Internal Temperature: ${data.temperature} °C`;
+                        document.getElementById('temperature').textContent = data.temperature + ' °C';
                         if (document.getElementById('current-temp-display')) {
                             document.getElementById('current-temp-display').textContent = data.temperature;
                         }
                     }
                     if (data.externalTemperature !== undefined) {
-                        document.getElementById('externalTemperature').textContent = 
-                            `External Temperature: ${data.externalTemperature} °C`;
+                        document.getElementById('externalTemperature').textContent = data.externalTemperature + ' °C';
                     }
                 } catch (e) {
                     console.error('WebSocket message parsing error:', e);
@@ -1583,15 +1642,13 @@ const char mainPage[] PROGMEM = R"html(
                         }
                     }
                     if (data.temperature !== undefined) {
-                        document.getElementById('temperature').textContent = 
-                            `Internal Temperature: ${data.temperature} °C`;
+                        document.getElementById('temperature').textContent = data.temperature + ' °C';
                         if (document.getElementById('current-temp-display')) {
                             document.getElementById('current-temp-display').textContent = data.temperature;
                         }
                     }
                     if (data.externalTemperature !== undefined) {
-                        document.getElementById('externalTemperature').textContent = 
-                            `External Temperature: ${data.externalTemperature} °C`;
+                        document.getElementById('externalTemperature').textContent = data.externalTemperature + ' °C';
                     }
                 })
                 .catch(error => {
