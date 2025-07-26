@@ -55,6 +55,7 @@ void checkTemporarySchedules();
 void handleHeaterCtrlPage();
 void handleTempSchedulesPage();
 void handleSchedulesPage();
+void handleExternalTemperature();
 
 struct Schedule {
   int id;
@@ -171,12 +172,17 @@ const char* authUsername = "admin";
 const char* authPassword = "12345678";
 
 #define ONE_WIRE_BUS 26
+#define EXTERNAL_ONE_WIRE_BUS 27
 OneWire oneWire(ONE_WIRE_BUS);
+OneWire externalOneWire(EXTERNAL_ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
-DeviceAddress tempDeviceAddress;
-DeviceAddress sensorAddress = { 0x28, 0xCB, 0xBA, 0x57, 0x04, 0xE1, 0x3C, 0xE7 };
-unsigned long lastTemp = 0;
+DallasTemperature externalSensors(&externalOneWire);
+DeviceAddress sensorAddress = { 0x28, 0x59, 0x71, 0x80, 0xE3, 0xE1, 0x3C, 0x50 };
+DeviceAddress externalSensorAddress = { 0x28, 0xCB, 0xBA, 0x57, 0x04, 0xE1, 0x3C, 0xE7 };
+unsigned long lastTemp = 5000;
+unsigned long lastExternalTemp = 60000;
 float lastValidTemperature = 0;
+float lastValidExternalTemperature = 0;
 
 WiFiEventId_t wifiConnectHandler;
 
@@ -904,6 +910,7 @@ void setup() {
   // delay(2000);
 
   sensors.begin();
+  externalSensors.begin();
 
   if (!LittleFS.begin(true)) {
     storeLogEntry("Failed to mount FS");
@@ -964,6 +971,7 @@ void setup() {
   loadTemperatureSettings();
 
   handleTemperature();
+  handleExternalTemperature();
 
   webSocket.begin();
   webSocket.onEvent(webSocketEvent);
@@ -1384,7 +1392,8 @@ const char mainPage[] PROGMEM = R"html(
             <div id="day">Loading day...</div>
             <div id="date">Loading date...</div>
         </div>
-        <div id="temperature">Temperature: -- °C</div>
+        <div id="temperature">Internal Temperature: -- °C</div>
+        <div id="externalTemperature">External Temperature: -- °C</div>
 
         <div id="errorSection">
             <p>Error detected!</p>
@@ -1468,10 +1477,14 @@ const char mainPage[] PROGMEM = R"html(
                     }
                     if (data.temperature !== undefined) {
                         document.getElementById('temperature').textContent = 
-                            `Temperature: ${data.temperature} °C`;
+                            `Internal Temperature: ${data.temperature} °C`;
                         if (document.getElementById('current-temp-display')) {
                             document.getElementById('current-temp-display').textContent = data.temperature;
                         }
+                    }
+                    if (data.externalTemperature !== undefined) {
+                        document.getElementById('externalTemperature').textContent = 
+                            `External Temperature: ${data.externalTemperature} °C`;
                     }
                 } catch (e) {
                     console.error('WebSocket message parsing error:', e);
@@ -1571,10 +1584,14 @@ const char mainPage[] PROGMEM = R"html(
                     }
                     if (data.temperature !== undefined) {
                         document.getElementById('temperature').textContent = 
-                            `Temperature: ${data.temperature} °C`;
+                            `Internal Temperature: ${data.temperature} °C`;
                         if (document.getElementById('current-temp-display')) {
                             document.getElementById('current-temp-display').textContent = data.temperature;
                         }
+                    }
+                    if (data.externalTemperature !== undefined) {
+                        document.getElementById('externalTemperature').textContent = 
+                            `External Temperature: ${data.externalTemperature} °C`;
                     }
                 })
                 .catch(error => {
@@ -4042,6 +4059,7 @@ void emailLoop(void* parameter) {
   
   for (;;) {
     handleTemperature();
+    handleExternalTemperature();
 
     if (WiFi.status() != WL_CONNECTED) {
       unsigned long currentMillis = millis();
@@ -4320,7 +4338,7 @@ void deactivateRelay(int relayNum, bool manual) {
 }
 
 void broadcastRelayStates() {
-  String message = "{\"relay1\":" + String(relay1State || overrideRelay1) + ",\"relay2\":" + String(relay2State || overrideRelay2) + ",\"relay3\":" + String(relay3State || overrideRelay1) + ",\"relay4\":" + String(relay4State) + ",\"temperature\":" + String(lastValidTemperature, 1);
+  String message = "{\"relay1\":" + String(relay1State || overrideRelay1) + ",\"relay2\":" + String(relay2State || overrideRelay2) + ",\"relay3\":" + String(relay3State || overrideRelay1) + ",\"relay4\":" + String(relay4State) + ",\"temperature\":" + String(lastValidTemperature, 1) + ",\"externalTemperature\":" + String(lastValidExternalTemperature, 1);
 
   if (!temperatureData.empty()) {
     message += ",\"tempControlEnabled\":" + String(temperatureData[0].enabled ? "true" : "false") + ",\"minTemp\":" + String(temperatureData[0].minTemp) + ",\"maxTemp\":" + String(temperatureData[0].maxTemp);
@@ -4598,7 +4616,8 @@ void handleRelayStatus() {
   json += "\"2\":" + String(relay2State || overrideRelay2) + ",";
   json += "\"3\":" + String(relay3State || overrideRelay1) + ",";
   json += "\"4\":" + String(relay4State) + ",";
-  json += "\"temperature\":" + String(lastValidTemperature, 1) + "}";
+  json += "\"temperature\":" + String(lastValidTemperature, 1) + ",";
+  json += "\"externalTemperature\":" + String(lastValidExternalTemperature, 1) + "}";
   server.send(200, "application/json", json);
 }
 
@@ -4853,7 +4872,7 @@ void sendEmailWithLogs(const String& trigger) {
 }
 
 void handleTemperature() {
-  if (millis() - lastTemp >= 5000) {
+  if (millis() - lastTemp >= 20000) {
     sensors.requestTemperatures();
     float tempC = sensors.getTempC(sensorAddress);
 
@@ -5183,5 +5202,21 @@ void checkTemporarySchedules() {
     } else {
       ++it;
     }
+  }
+}
+
+void handleExternalTemperature() {
+  if (millis() - lastExternalTemp >= 60000) {
+    externalSensors.requestTemperatures();
+    float tempC = externalSensors.getTempC(externalSensorAddress);
+
+    if (tempC != DEVICE_DISCONNECTED_C) {
+      lastValidExternalTemperature = tempC;
+      broadcastRelayStates();
+    } else {
+      storeLogEntry("External temperature sensor read error");
+    }
+
+    lastExternalTemp = millis();
   }
 }
