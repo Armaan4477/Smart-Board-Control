@@ -183,6 +183,10 @@ unsigned long lastTemp = 5000;
 unsigned long lastExternalTemp = 60000;
 float lastValidTemperature = 0;
 float lastValidExternalTemperature = 0;
+const int MAX_EXTERNAL_TEMP_FAILURES = 8;
+int consecutiveExternalTempFailures = 0;
+bool hasExternalTempError = false;
+bool externalTempErrorLogged = false;
 
 WiFiEventId_t wifiConnectHandler;
 
@@ -5270,8 +5274,24 @@ void handleExternalTemperature() {
     if (tempC != DEVICE_DISCONNECTED_C) {
       lastValidExternalTemperature = tempC;
       broadcastRelayStates();
+      consecutiveExternalTempFailures = 0;
+      if (hasExternalTempError) {
+        storeLogEntry("External temperature sensor restored");
+        hasExternalTempError = false;
+        externalTempErrorLogged = false;
+        clearError();
+      }
     } else {
-      storeLogEntry("External temperature sensor read error");
+      consecutiveExternalTempFailures++;
+      if (consecutiveExternalTempFailures >= MAX_EXTERNAL_TEMP_FAILURES) {
+        if (!externalTempErrorLogged) {
+          storeLogEntry("Error: External temperature sensor failed " + String(consecutiveExternalTempFailures) + " times");
+          sendEmailWithLogs("External Temperature Sensor Error");
+          indicateError();
+          externalTempErrorLogged = true;
+        }
+        hasExternalTempError = true;
+      }
     }
 
     lastExternalTemp = millis();
