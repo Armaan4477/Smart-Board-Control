@@ -5365,11 +5365,7 @@ void sendEmailWithLogs(const String& trigger) {
   
   emailInProgress = true;
 
-  sensors.requestTemperatures();
-  float currentTempC = sensors.getTempC(sensorAddress);
-  if (currentTempC != DEVICE_DISCONNECTED_C) {
-    lastValidTemperature = currentTempC;
-  }
+  tempTemperature();
 
   MailClient.networkReconnect(false);
   smtp.debug(0);
@@ -5400,7 +5396,8 @@ void sendEmailWithLogs(const String& trigger) {
   textMsg += "Event: " + trigger + "\n";
   textMsg += "Timestamp: " + formattedTime + "\n\n";
   textMsg += "System Status:\n";
-  textMsg += "Temperature: " + String(lastValidTemperature, 1) + " °C\n";
+  textMsg += "Internal Temperature: " + String(lastValidTemperature, 1) + " °C\n";
+  textMsg += "External Temperature: " + String(lastValidExternalTemperature, 1) + " °C\n";
   textMsg += "Relay 1 (WaveMaker): " + String(relay1State ? "ON" : "OFF") + "\n";
   textMsg += "Relay 2 (Light): " + String(relay2State ? "ON" : "OFF") + "\n";
   textMsg += "Relay 3 (Air Pump): " + String(relay3State ? "ON" : "OFF") + "\n";
