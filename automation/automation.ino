@@ -52,10 +52,15 @@ void handleGetTemporarySchedules();
 void handleAddTemporarySchedule();
 void handleDeleteTemporarySchedule();
 void checkTemporarySchedules();
-void handleHeaterCtrlPage();
+void handleTempCtrlPage();
 void handleTempSchedulesPage();
 void handleSchedulesPage();
 void handleExternalTemperature();
+void loadCalibrationSettings();
+void saveCalibrationSettings();
+void handleGetCalibrationSettings();
+void handleSaveCalibrationSettings();
+void tempTemperature();
 
 struct Schedule {
   int id;
@@ -90,6 +95,11 @@ struct TemporarySchedule {
   bool hasOnTime;
   bool hasOffTime;
   bool enabled;
+};
+
+struct CalibrationData {
+  float internalOffset;
+  float externalOffset;
 };
 
 const int relay1 = 16;
@@ -179,14 +189,18 @@ DallasTemperature sensors(&oneWire);
 DallasTemperature externalSensors(&externalOneWire);
 DeviceAddress sensorAddress = { 0x28, 0x59, 0x71, 0x80, 0xE3, 0xE1, 0x3C, 0x50 };
 DeviceAddress externalSensorAddress = { 0x28, 0xCB, 0xBA, 0x57, 0x04, 0xE1, 0x3C, 0xE7 };
-unsigned long lastTemp = 5000;
-unsigned long lastExternalTemp = 60000;
+unsigned long lastTemp = 0;
+unsigned long lastExternalTemp = 0;
 float lastValidTemperature = 0;
 float lastValidExternalTemperature = 0;
 const int MAX_EXTERNAL_TEMP_FAILURES = 8;
 int consecutiveExternalTempFailures = 0;
 bool hasExternalTempError = false;
 bool externalTempErrorLogged = false;
+
+CalibrationData sensorCalibration = {0.0, 0.0};
+const int CALIBRATION_START_ADDR = TEMP_SETTINGS_START_ADDR + TEMP_SETTINGS_SIZE + 1;
+const int CALIBRATION_SIZE = sizeof(CalibrationData);
 
 WiFiEventId_t wifiConnectHandler;
 
@@ -949,7 +963,7 @@ void setup() {
   server.on("/favicon.png", HTTP_GET, handleFavicon);
   server.on("/logs", HTTP_GET, handleLogsPage);
   server.on("/logs/data", HTTP_GET, handleGetLogs);
-  server.on("/heatercontrol", HTTP_GET, handleHeaterCtrlPage);
+  server.on("/tempcontrol", HTTP_GET, handleTempCtrlPage);
   server.on("/tempschedules", HTTP_GET, handleTempSchedulesPage);
   server.on("/mainSchedules", HTTP_GET, handleSchedulesPage);
   server.on("/relay/1", HTTP_ANY, handleRelay1);
@@ -969,13 +983,15 @@ void setup() {
   server.on("/temp-schedules", HTTP_GET, handleGetTemporarySchedules);
   server.on("/temp-schedule/add", HTTP_POST, handleAddTemporarySchedule);
   server.on("/temp-schedule/delete", HTTP_DELETE, handleDeleteTemporarySchedule);
+  server.on("/calibration/settings", HTTP_GET, handleGetCalibrationSettings);
+  server.on("/calibration/save", HTTP_POST, handleSaveCalibrationSettings);
   server.begin();
   EEPROM.begin(EEPROM_SIZE);
   loadSchedulesFromEEPROM();
   loadTemperatureSettings();
+  loadCalibrationSettings();
 
-  handleTemperature();
-  handleExternalTemperature();
+  tempTemperature();
 
   webSocket.begin();
   webSocket.onEvent(webSocketEvent);
@@ -1073,6 +1089,66 @@ void saveTemperatureSettings() {
     EEPROM.commit();
     storeLogEntry("Temperature settings saved to EEPROM");
   }
+}
+
+void loadCalibrationSettings() {
+  CalibrationData storedData;
+  EEPROM.get(CALIBRATION_START_ADDR, storedData);
+
+  if (storedData.internalOffset >= -10.0 && storedData.internalOffset <= 10.0 && 
+      storedData.externalOffset >= -10.0 && storedData.externalOffset <= 10.0) {
+    sensorCalibration = storedData;
+    storeLogEntry("Sensor calibration loaded from EEPROM");
+  } else {
+    sensorCalibration.internalOffset = 0.0;
+    sensorCalibration.externalOffset = 0.0;
+    storeLogEntry("Using default sensor calibration settings");
+    saveCalibrationSettings();
+  }
+}
+
+void saveCalibrationSettings() {
+  EEPROM.put(CALIBRATION_START_ADDR, sensorCalibration);
+  EEPROM.commit();
+  storeLogEntry("Sensor calibration settings saved to EEPROM");
+}
+
+void handleGetCalibrationSettings() {
+  String json = "{";
+  json += "\"internalOffset\":" + String(sensorCalibration.internalOffset, 2) + ",";
+  json += "\"externalOffset\":" + String(sensorCalibration.externalOffset, 2);
+  json += "}";
+  server.send(200, "application/json", json);
+}
+
+void handleSaveCalibrationSettings() {
+  if (server.hasArg("plain")) {
+    String body = server.arg("plain");
+    StaticJsonDocument<200> doc;
+    DeserializationError error = deserializeJson(doc, body);
+
+    if (!error) {
+      float internalOffset = doc["internalOffset"];
+      float externalOffset = doc["externalOffset"];
+
+      if (internalOffset >= -10.0 && internalOffset <= 10.0 && 
+          externalOffset >= -10.0 && externalOffset <= 10.0) {
+        
+        sensorCalibration.internalOffset = internalOffset;
+        sensorCalibration.externalOffset = externalOffset;
+        
+        saveCalibrationSettings();
+        
+        server.send(200, "application/json", "{\"status\":\"success\"}");
+        storeLogEntry("Sensor calibration updated: Internal=" + String(internalOffset, 2) + "°C, External=" + String(externalOffset, 2) + "°C");
+        return;
+      } else {
+        server.send(400, "application/json", "{\"error\":\"Calibration offsets must be between -10°C and +10°C\"}");
+        return;
+      }
+    }
+  }
+  server.send(400, "application/json", "{\"error\":\"Invalid request\"}");
 }
 
 void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length) {
@@ -1480,7 +1556,7 @@ const char mainPage[] PROGMEM = R"html(
             <div class="navigation-buttons">
                 <button class="button nav-button" onclick="showTempSchedules()">Temporary Schedules</button>
                 <button class="button nav-button" onclick="showSchedules()">Main Schedules</button>
-                <button class="button nav-button" onclick="showHeaterControl()">Heater Control</button>
+                <button class="button nav-button" onclick="showHeaterControl()">Temperature Control</button>
                 <button class="button nav-button" onclick="showLogs()">System Logs</button>
             </div>
         </div>
@@ -1683,7 +1759,7 @@ const char mainPage[] PROGMEM = R"html(
             window.location.href = '/logs';
         }
         function showHeaterControl() {
-            window.location.href = '/heatercontrol';
+            window.location.href = '/tempcontrol';
         }
         function showTempSchedules() {
             window.location.href = '/tempschedules';
@@ -1983,7 +2059,7 @@ const char logsPage[] PROGMEM = R"html(
 </html>
 )html";
 
-const char heaterctrl[] PROGMEM = R"html(
+const char tempctrl[] PROGMEM = R"html(
 <!DOCTYPE html>
 <html>
 <head>
@@ -1991,7 +2067,7 @@ const char heaterctrl[] PROGMEM = R"html(
     <link rel="shortcut icon" type="image/png" href="/favicon.png">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Heater Control</title>
+    <title>Temperature Control</title>
     <style>
         :root {
             --primary-color: #1976D2;
@@ -2155,6 +2231,22 @@ const char heaterctrl[] PROGMEM = R"html(
             background: var(--primary-dark);
             transform: scale(1.1);
         }
+
+        .temp-control input[type="number"] {
+            width: 100%;
+            padding: 12px;
+            margin: 8px 0 20px 0;
+            border-radius: var(--border-radius);
+            border: 1px solid #ddd;
+            font-size: 1rem;
+            transition: var(--transition);
+        }
+
+        .temp-control input[type="number"]:focus {
+            outline: none;
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 3px var(--primary-light);
+        }
         
         .temp-control .toggle-container {
             display: flex;
@@ -2220,6 +2312,7 @@ const char heaterctrl[] PROGMEM = R"html(
         .temp-control .temp-buttons {
             display: flex;
             justify-content: flex-end;
+            gap: 10px;
         }
         
         .temp-control .save-button {
@@ -2311,6 +2404,67 @@ const char heaterctrl[] PROGMEM = R"html(
             font-weight: 500;
         }
 
+        .calibration-section {
+            background-color: var(--card-color);
+            padding: 25px;
+            border-radius: var(--border-radius);
+            box-shadow: var(--shadow);
+            margin-bottom: 25px;
+            transition: var(--transition);
+        }
+
+        .calibration-section:hover {
+            box-shadow: 0 5px 15px rgba(0,0,0,0.15);
+        }
+
+        .calibration-section h3 {
+            color: var(--primary-color);
+            margin-bottom: 15px;
+            font-size: 1.5rem;
+            border-bottom: 2px solid var(--primary-light);
+            padding-bottom: 10px;
+        }
+
+        .calibration-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        .calibration-item label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 500;
+            color: var(--text-color);
+        }
+
+        .calibration-item input[type="number"] {
+            width: 100%;
+            padding: 12px;
+            margin: 8px 0 20px 0;
+            border-radius: var(--border-radius);
+            border: 1px solid #ddd;
+            font-size: 1rem;
+            transition: var(--transition);
+        }
+
+        .calibration-item input[type="number"]:focus {
+            outline: none;
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 3px var(--primary-light);
+        }
+
+        .calibration-note {
+            background-color: #e3f2fd;
+            border-left: 4px solid var(--primary-color);
+            padding: 12px;
+            margin-bottom: 20px;
+            border-radius: 4px;
+            font-size: 0.9rem;
+            color: #1565c0;
+        }
+
         #temperature {
             font-size: 2rem;
             margin: 20px 0;
@@ -2375,6 +2529,24 @@ const char heaterctrl[] PROGMEM = R"html(
                 width: 100%;
                 padding: 12px;
             }
+
+            .temp-control .temp-buttons {
+                flex-direction: column;
+                gap: 10px;
+            }
+
+            .calibration-grid {
+                grid-template-columns: 1fr;
+                gap: 15px;
+            }
+
+            .calibration-section {
+                padding: 15px;
+            }
+
+            .calibration-section h3 {
+                font-size: 1.3rem;
+            }
             
             #temperature {
                 font-size: 1.5rem;
@@ -2385,7 +2557,7 @@ const char heaterctrl[] PROGMEM = R"html(
 </head>
 <body>
     <header>
-        <h1>Heater Control</h1>
+        <h1>Temperature Control</h1>
     </header>
     <div class="container">
         <div class="header-actions">
@@ -2451,14 +2623,37 @@ const char heaterctrl[] PROGMEM = R"html(
                 <button class="save-button" onclick="saveTemperatureSettings()">Save Settings</button>
             </div>
         </div>
+
+        <div class="calibration-section">
+            <h3>Sensor Calibration</h3>
+            <div class="calibration-note">
+                Calibration allows you to adjust sensor readings to match a reference thermometer. 
+                Positive values increase the reading, negative values decrease it. Range: -10°C to +10°C
+            </div>
+            
+            <div class="calibration-grid">
+                <div class="calibration-item">
+                    <label for="internal-calibration">Internal Sensor Offset (°C):</label>
+                    <input type="number" id="internal-calibration" min="-10" max="10" step="0.1" value="0.0">
+                </div>
+                <div class="calibration-item">
+                    <label for="external-calibration">External Sensor Offset (°C):</label>
+                    <input type="number" id="external-calibration" min="-10" max="10" step="0.1" value="0.0">
+                </div>
+            </div>
+            
+            <div class="temp-buttons">
+                <button class="save-button" onclick="saveCalibrationSettings()">Save Calibration</button>
+            </div>
+        </div>
     </div>
     <script>
         let socket = new WebSocket('ws://' + window.location.hostname + ':81/');
 
         socket.onopen = () => {
             console.log('WebSocket connected');
-            // Request initial data
             loadTemperatureSettings();
+            loadCalibrationSettings();
         };
         
         socket.onmessage = (event) => {
@@ -2550,10 +2745,56 @@ const char heaterctrl[] PROGMEM = R"html(
             })
             .then(data => {
                 alert('Temperature settings saved successfully!');
-                loadTemperatureSettings(); // Reload to confirm settings
+                loadTemperatureSettings();
             })
             .catch(error => {
                 alert('Failed to save settings: ' + error.message);
+            });
+        }
+
+        function loadCalibrationSettings() {
+            fetch('/calibration/settings')
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('internal-calibration').value = data.internalOffset;
+                    document.getElementById('external-calibration').value = data.externalOffset;
+                })
+                .catch(error => {
+                    console.error('Error loading calibration settings:', error);
+                });
+        }
+
+        function saveCalibrationSettings() {
+            const internalOffset = parseFloat(document.getElementById('internal-calibration').value);
+            const externalOffset = parseFloat(document.getElementById('external-calibration').value);
+            
+            if (internalOffset < -10 || internalOffset > 10 || externalOffset < -10 || externalOffset > 10) {
+                alert('Calibration offsets must be between -10°C and +10°C!');
+                return;
+            }
+            
+            const settings = {
+                internalOffset: internalOffset,
+                externalOffset: externalOffset
+            };
+            
+            fetch('/calibration/save', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(settings)
+            })
+            .then(response => {
+                if (!response.ok) {
+                    return response.json().then(data => { throw new Error(data.error); });
+                }
+                return response.json();
+            })
+            .then(data => {
+                alert('Calibration settings saved successfully!');
+                loadCalibrationSettings();
+            })
+            .catch(error => {
+                alert('Failed to save calibration: ' + error.message);
             });
         }
 
@@ -2584,6 +2825,7 @@ const char heaterctrl[] PROGMEM = R"html(
         document.getElementById('max-temp-slider').addEventListener('input', updateTemperatureSliders);
 
         loadTemperatureSettings();
+        loadCalibrationSettings();
         getInitialHeaterStatus();
         
         setInterval(loadTemperatureSettings, 10000);
@@ -4098,8 +4340,8 @@ void handleLogsPage() {
   server.send_P(200, "text/html", logsPage);
 }
 
-void handleHeaterCtrlPage() {
-  server.send_P(200, "text/html", heaterctrl);
+void handleTempCtrlPage() {
+  server.send_P(200, "text/html", tempctrl);
 }
 
 void handleTempSchedulesPage() {
@@ -4938,7 +5180,7 @@ void handleTemperature() {
     float tempC = sensors.getTempC(sensorAddress);
 
     if (tempC != DEVICE_DISCONNECTED_C) {
-      lastValidTemperature = tempC;
+      lastValidTemperature = tempC + sensorCalibration.internalOffset;
       broadcastRelayStates();
       consecutiveTempFailures = 0;
       if (hasTempError) {
@@ -5272,7 +5514,7 @@ void handleExternalTemperature() {
     float tempC = externalSensors.getTempC(externalSensorAddress);
 
     if (tempC != DEVICE_DISCONNECTED_C) {
-      lastValidExternalTemperature = tempC;
+      lastValidExternalTemperature = tempC + sensorCalibration.externalOffset;
       broadcastRelayStates();
       consecutiveExternalTempFailures = 0;
       if (hasExternalTempError) {
@@ -5296,4 +5538,20 @@ void handleExternalTemperature() {
 
     lastExternalTemp = millis();
   }
+}
+
+void tempTemperature() {
+    sensors.requestTemperatures();
+    float tempC = sensors.getTempC(sensorAddress);
+
+    if (tempC != DEVICE_DISCONNECTED_C) {
+        lastValidTemperature = tempC + sensorCalibration.internalOffset;
+    }
+
+    externalSensors.requestTemperatures();
+    float externalTempC = externalSensors.getTempC(externalSensorAddress);
+
+    if (externalTempC != DEVICE_DISCONNECTED_C) {
+        lastValidExternalTemperature = externalTempC + sensorCalibration.externalOffset;
+    }
 }
