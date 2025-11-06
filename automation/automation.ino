@@ -9,7 +9,6 @@
 #include <Ticker.h>
 #include <TimeLib.h>
 #include <LittleFS.h>
-#include <ESP_Mail_Client.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #include <time.h>
@@ -32,7 +31,6 @@ void handleOneClickLight();
 void handleTemperature();
 void emailLoop(void*);
 void mainLoop(void*);
-void sendEmailWithLogs(const String&);
 void checkoverride1();
 void checkoverride2();
 void overrideLEDState();
@@ -4693,7 +4691,6 @@ void emailLoop(void* parameter) {
       
       if (!startupemail && (currentTime - lastEmailAttempt > EMAIL_RETRY_INTERVAL)) {
         lastEmailAttempt = currentTime;
-        sendEmailWithLogs("Device is powered on");
         startupemail = true;
 
         struct tm timeinfo;
@@ -4704,7 +4701,6 @@ void emailLoop(void* parameter) {
 
       if (pointemail && (currentTime - lastEmailAttempt > EMAIL_RETRY_INTERVAL)) {
         lastEmailAttempt = currentTime;
-        sendEmailWithLogs("Status Check");
         pointemail = false;
       }
     }
@@ -5346,149 +5342,6 @@ void overrideLEDState() {
   }
 }
 
-void sendEmailWithLogs(const String& trigger) {
-  if (!WiFi.isConnected()) {
-    storeLogEntry("Failed to send email: No WiFi connection");
-    return;
-  }
-
-  if (!LittleFS.exists("/logs.json")) {
-    storeLogEntry("Failed to send email: logs.json does not exist");
-    return;
-  }
-
-  static bool emailInProgress = false;
-  if (emailInProgress) {
-    storeLogEntry("Email already in progress, skipping");
-    return;
-  }
-  
-  emailInProgress = true;
-
-  tempTemperature();
-
-  MailClient.networkReconnect(false);
-  smtp.debug(0);
-  smtp.setTCPTimeout(10000);
-
-  Session_Config config;
-  config.server.host_name = SMTP_HOST;
-  config.server.port = SMTP_PORT;
-  config.login.email = emailSenderAccount;
-  config.login.password = emailSenderPassword;
-  config.login.user_domain = "";
-
-  SMTP_Message message;
-  message.sender.name = "Aquarium Control";
-  message.sender.email = emailSenderAccount;
-  message.subject = String(emailSubject) + " - " + trigger;
-  message.addRecipient("User", emailRecipient);
-
-  struct tm timeinfo;
-  String formattedTime = "Unknown";
-  if (getLocalTime(&timeinfo)) {
-    char timeStr[20];
-    sprintf(timeStr, "%02d:%02d:%02d", timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
-    formattedTime = String(timeStr);
-  }
-
-  String textMsg = "Aquarium Control System Report\n";
-  textMsg += "Event: " + trigger + "\n";
-  textMsg += "Timestamp: " + formattedTime + "\n\n";
-  textMsg += "System Status:\n";
-  textMsg += "Internal Temperature: " + String(lastValidTemperature, 1) + " °C\n";
-  textMsg += "External Temperature: " + String(lastValidExternalTemperature, 1) + " °C\n";
-  textMsg += "Relay 1 (WaveMaker): " + String(relay1State ? "ON" : "OFF") + "\n";
-  textMsg += "Relay 2 (Light): " + String(relay2State ? "ON" : "OFF") + "\n";
-  textMsg += "Relay 3 (Air Pump): " + String(relay3State ? "ON" : "OFF") + "\n";
-  textMsg += "Override 1: " + String(overrideRelay1 ? "Active" : "Inactive") + "\n";
-  textMsg += "Override 2: " + String(overrideRelay2 ? "Active" : "Inactive") + "\n";
-  textMsg += "Error Status: " + String(hasError ? "Error Present" : "No Errors") + "\n\n";
-  textMsg += "Full logs are attached as logs.json";
-
-  message.text.content = textMsg.c_str();
-  message.text.charSet = "us-ascii";
-  message.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
-
-  File logsFile = LittleFS.open("/logs.json", "r");
-  if (!logsFile) {
-    storeLogEntry("Failed to open logs file for email");
-    emailInProgress = false;
-    return;
-  }
-
-  size_t fileSize = logsFile.size();
-  if (fileSize == 0) {
-    storeLogEntry("Logs file is empty");
-    logsFile.close();
-    emailInProgress = false;
-    return;
-  }
-
-  char* fileBuffer = new char[fileSize + 1];
-  
-  if (!fileBuffer) {
-    storeLogEntry("Failed to allocate memory for logs");
-    logsFile.close();
-    emailInProgress = false;
-    return;
-  }
-  
-  size_t bytesRead = logsFile.readBytes(fileBuffer, fileSize);
-  fileBuffer[bytesRead] = '\0';
-  logsFile.close();
-
-  SMTP_Attachment att;
-  att.descr.filename = "logs.json";
-  att.descr.mime = "application/json";
-  att.descr.transfer_encoding = Content_Transfer_Encoding::enc_base64;
-  att.blob.data = (uint8_t*)fileBuffer;
-  att.blob.size = bytesRead;
-  message.addAttachment(att);
-
-  unsigned long emailStartTime = millis();
-  const unsigned long EMAIL_TIMEOUT = 20000;
-
-  bool connected = false;
-  try {
-    connected = smtp.connect(&config);
-  } catch (...) {
-    storeLogEntry("Exception during SMTP connection");
-    connected = false;
-  }
-
-  if (!connected) {
-    storeLogEntry("Failed to connect to email server");
-    delete[] fileBuffer;
-    emailInProgress = false;
-    return;
-  }
-
-  bool sendSuccess = false;
-  try {
-    sendSuccess = MailClient.sendMail(&smtp, &message);
-  } catch (...) {
-    storeLogEntry("Exception during email sending");
-    sendSuccess = false;
-  }
-
-  if (!sendSuccess) {
-    storeLogEntry("Failed to send email: " + smtp.errorReason());
-  } else {
-    storeLogEntry("Email sent successfully with logs");
-  }
-
-  delete[] fileBuffer;
-  
-  try {
-    smtp.closeSession();
-  } catch (...) {
-    storeLogEntry("Exception during SMTP session close");
-  }
-  
-  emailInProgress = false;
-}
-
 void handleTemperature() {
   if (millis() - lastTemp >= 20000) {
     sensors.requestTemperatures();
@@ -5510,7 +5363,6 @@ void handleTemperature() {
           if (!tempErrorLogged) {
             storeLogEntry("Error: Temperature sensor failed " + String(consecutiveTempFailures) + " times");
             tempErrorLogged = true;
-            sendEmailWithLogs("Temperature Sensor Error");
           }
           indicateError();
           hasTempError = true;
@@ -5843,7 +5695,6 @@ void handleExternalTemperature() {
       if (consecutiveExternalTempFailures >= MAX_EXTERNAL_TEMP_FAILURES) {
         if (!externalTempErrorLogged) {
           storeLogEntry("Error: External temperature sensor failed " + String(consecutiveExternalTempFailures) + " times");
-          sendEmailWithLogs("External Temperature Sensor Error");
           indicateError();
           externalTempErrorLogged = true;
         }
