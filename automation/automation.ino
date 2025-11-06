@@ -741,7 +741,7 @@ void handleGetLogs() {
 }
 
 void storeLogEntry(const String& msg) {
-  Serial.println(msg);
+  // Serial.println(msg);
   const int MAX_LOGS = 18;
   const int MAX_LOG_ID = 20;
 
@@ -868,9 +868,8 @@ void setup() {
   digitalWrite(led3Pin, LOW);
   digitalWrite(led4Pin, LOW);
 
-  Serial.begin(115200);
-  delay(2000);
-
+  // Serial.begin(115200);
+  // delay(2000);
 
   if (!LittleFS.begin(true)) {
     storeLogEntry("Failed to mount FS");
@@ -3339,21 +3338,6 @@ void loop() {
 void secondaryLoop(void* parameter) {
 
   for (;;) {
-    server.handleClient();
-    webSocket.loop();
-
-    delay(20);
-  }
-}
-
-void mainLoop(void* parameter) {
-  for (;;) {
-    resetWatchdog();
-    checkPushButton1();
-    checkPushButton2();
-    checkPushButton3();
-    checkPushButton4();
-
     if (WiFi.status() != WL_CONNECTED) {
       unsigned long currentMillis = millis();
       if (currentMillis - lastWifiConnectAttempt > WIFI_RECONNECT_INTERVAL) {
@@ -3370,6 +3354,24 @@ void mainLoop(void* parameter) {
         wifiConnectionErrorLogged = false;
       }
     }
+
+    if (WiFi.status() == WL_CONNECTED) {
+      server.handleClient();
+      webSocket.loop();
+    }
+
+    checkPushButton1();
+    checkPushButton2();
+    checkPushButton3();
+    checkPushButton4();
+
+    delay(10);
+  }
+}
+
+void mainLoop(void* parameter) {
+  for (;;) {
+    resetWatchdog();
 
     if (!validTimeSync && WiFi.status() == WL_CONNECTED) {
       unsigned long currentMillis = millis();
