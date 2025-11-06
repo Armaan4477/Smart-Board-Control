@@ -25,7 +25,7 @@ void handleUpdateSchedule();
 void handleRelayStatus();
 void handleClearError();
 void handleGetErrorStatus();
-void handleOneClickLight();
+
 void secondaryLoop(void*);
 void mainLoop(void*);
 void checkoverride1();
@@ -35,7 +35,6 @@ void checkSchedules();
 void checkScheduleslaunch();
 void activateRelay(int, bool);
 void deactivateRelay(int, bool);
-void toggleLightSequence();
 void broadcastRelayStates();
 void handleGetTemporarySchedules();
 void handleAddTemporarySchedule();
@@ -1002,9 +1001,9 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length)
         String message = "{\"relay1\":" + String(relay1State || overrideRelay1) + 
                         ",\"relay2\":" + String(relay2State || overrideRelay2) + 
                         ",\"relay3\":" + String(relay3State || overrideRelay1) + 
-                        ",\"relay1Name\":\"WaveMaker\"" + 
-                        ",\"relay2Name\":\"Light\"" + 
-                        ",\"relay3Name\":\"Air Pump\"}";
+                        ",\"relay1Name\":\"Socket 1\"" + 
+                        ",\"relay2Name\":\"Socket 2\"" + 
+                        ",\"relay3Name\":\"Socket 3\"}";
         webSocket.sendTXT(num, message);
       }
       break;
@@ -1305,10 +1304,9 @@ const char mainPage[] PROGMEM = R"html(
         <div class="control-section">
             <h3>Relay Controls</h3>
             <div class="relay-buttons">
-                <button class="button" onclick="toggleRelay(1)" id="btn1">WaveMaker</button>
-                <button class="button" onclick="toggleRelay(3)" id="btn3">Air Pump</button>
-                <button class="button" onclick="toggleRelay(2)" id="btn2">Light</button>
-                <button class="button special-button" onclick="oneClickLight()" id="btnOneClick">Change Light Color</button>
+                <button class="button" onclick="toggleRelay(1)" id="btn1">Socket 1</button>
+                <button class="button" onclick="toggleRelay(2)" id="btn2">Socket 2</button>
+                <button class="button" onclick="toggleRelay(3)" id="btn3">Socket 3</button>
             </div>
         </div>
 
@@ -1329,9 +1327,9 @@ const char mainPage[] PROGMEM = R"html(
         };
 
         let relayNames = {
-            1: "WaveMaker",
-            2: "Light",
-            3: "Air Pump"
+            1: "Socket 1",
+            2: "Socket 2",
+            3: "Socket 3"
         };
 
         let socket = null;
@@ -1508,15 +1506,6 @@ const char mainPage[] PROGMEM = R"html(
         }
         function showSchedules() {
             window.location.href = '/mainSchedules';
-        }
-
-        function oneClickLight() {
-            fetch('/relay/oneclick', { method: 'POST' })
-            .then(response => response.json().then(data => {
-                if (!response.ok) throw new Error(data.error);
-                alert('Light colour changed successfully.');
-            }))
-            .catch(error => alert(error.message));
         }
 
         setInterval(updateTime, 1000);
@@ -2374,9 +2363,9 @@ const char tempschedules[] PROGMEM = R"html(
             <label for="tempRelaySelect">Select Relay:</label>
             <select id="tempRelaySelect">
                 <option value="" disabled selected>Select Relay</option>
-                <option value="1">WaveMaker</option>
-                <option value="2">Light</option>
-                <option value="3">Air Pump</option>
+                <option value="1">Socket 1</option>
+                <option value="2">Socket 2</option>
+                <option value="3">Socket 3</option>
             </select>
             <div id="tempRelayError" class="error">Please select a relay.</div>
 
@@ -2494,9 +2483,9 @@ const char tempschedules[] PROGMEM = R"html(
                 schedules.forEach(schedule => {
                     const row = table.insertRow();
                     let relayName = "Unknown";
-                    if (schedule.relay == 1) relayName = "WaveMaker";
-                    else if (schedule.relay == 2) relayName = "Light";
-                    else if (schedule.relay == 3) relayName = "Air Pump";
+                    if (schedule.relay == 1) relayName = "Socket 1";
+                    else if (schedule.relay == 2) relayName = "Socket 2";
+                    else if (schedule.relay == 3) relayName = "Socket 3";
                     
                     row.insertCell(0).textContent = schedule.id;
                     row.insertCell(1).textContent = relayName;
@@ -3053,9 +3042,9 @@ const char mainSchedules[] PROGMEM = R"html(
             <label for="relaySelect">Select Relay:</label>
             <select id="relaySelect">
                 <option value="" disabled selected>Select Relay</option>
-                <option value="1">WaveMaker</option>
-                <option value="2">Light</option>
-                <option value="3">Air Pump</option>
+                <option value="1">Socket 1</option>
+                <option value="2">Socket 2</option>
+                <option value="3">Socket 3</option>
             </select>
             <div id="relayError" class="error">Please select a relay.</div>
 
@@ -3229,9 +3218,9 @@ const char mainSchedules[] PROGMEM = R"html(
                     schedules.forEach((schedule, index) => {
                         const row = table.insertRow();
                         let relayName = "Unknown";
-                        if (schedule.relay == 1) relayName = "WaveMaker";
-                        else if (schedule.relay == 2) relayName = "Light";
-                        else if (schedule.relay == 3) relayName = "Air Pump";
+                        if (schedule.relay == 1) relayName = "Socket 1";
+                        else if (schedule.relay == 2) relayName = "Socket 2";
+                        else if (schedule.relay == 3) relayName = "Socket 3";
                         
                         row.insertCell(0).textContent = relayName;
                         row.insertCell(1).textContent = `${String(schedule.onHour).padStart(2, '0')}:${String(schedule.onMinute).padStart(2, '0')}`;
@@ -3560,8 +3549,9 @@ void activateRelay(int relayNum, bool manual) {
       storeLogEntry("Relay 1 activated.");
       break;
     case 2:
-      toggleLightSequence();
-      storeLogEntry("Relay 2 activated with toggle sequence.");
+      digitalWrite(relay2, LOW);
+      relay2State = true;
+      storeLogEntry("Relay 2 activated.");
       break;
     case 3:
       digitalWrite(relay3, LOW);
@@ -3603,9 +3593,9 @@ void broadcastRelayStates() {
   String message = "{\"relay1\":" + String(relay1State || overrideRelay1) + ",\"relay2\":" + String(relay2State || overrideRelay2) + ",\"relay3\":" + String(relay3State || overrideRelay1) + ",\"relay4\":";
 
 
-  message += ",\"relay1Name\":\"WaveMaker\"";
-  message += ",\"relay2Name\":\"Light\"";
-  message += ",\"relay3Name\":\"Air Pump\"";
+  message += ",\"relay1Name\":\"Socket 1\"";
+  message += ",\"relay2Name\":\"Socket 2\"";
+  message += ",\"relay3Name\":\"Socket 3\"";
   message += ",\"relay4Name\":\"Heater\"}";
 
   webSocket.broadcastTXT(message);
@@ -3807,17 +3797,8 @@ void handleRelay2() {
       server.send(403, "application/json", "{\"error\":\"Physical override active\"}");
       return;
     }
-
-    if (!relay2State) {
-      toggleLightSequence();
-    } else {
-      digitalWrite(relay2, HIGH);
-      relay2State = false;
-      storeLogEntry("Relay 2 deactivated.");
-    }
-
+    toggleRelay(relay2, relay2State);
     server.send(200, "application/json", "{\"state\":" + String(relay2State) + "}");
-    broadcastRelayStates();
   } else if (server.method() == HTTP_GET) {
     server.send(200, "application/json", "{\"state\":" + String(relay2State) + "}");
   }
@@ -3834,19 +3815,6 @@ void handleRelay3() {
   } else if (server.method() == HTTP_GET) {
     server.send(200, "application/json", "{\"state\":" + String(relay3State) + "}");
   }
-}
-
-void toggleLightSequence() {
-  for (int i = 0; i < TOGGLE_COUNT; i++) {
-    digitalWrite(relay2, HIGH);
-    delay(TOGGLE_DELAY);
-    digitalWrite(relay2, LOW);
-    delay(TOGGLE_DELAY);
-  }
-  digitalWrite(relay2, LOW);
-  relay2State = true;
-  storeLogEntry("Light relay toggled sequence completed");
-  broadcastRelayStates();
 }
 
 void handleTime() {
@@ -3886,21 +3854,6 @@ void handleClearError() {
 void handleGetErrorStatus() {
   String json = "{\"hasError\":" + String(hasError ? "true" : "false") + "}";
   server.send(200, "application/json", json);
-}
-
-void handleOneClickLight() {
-  if (relay2State || overrideRelay2) {
-    digitalWrite(relay2, HIGH);
-    relay2State = false;
-    delay(500);
-    digitalWrite(relay2, LOW);
-    relay2State = true;
-    server.send(200, "application/json", "{\"status\":\"success\"}");
-    storeLogEntry("Relay 2 toggled off-on via One Click.");
-  } else {
-    server.send(403, "application/json", "{\"error\":\"Light is off\"}");
-    storeLogEntry("One Click failed: Light is off.");
-  }
 }
 
 void checkoverride1() {
