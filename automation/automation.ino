@@ -908,7 +908,6 @@ void setup() {
   server.on("/relay/status", HTTP_GET, handleRelayStatus);
   server.on("/error/clear", HTTP_POST, handleClearError);
   server.on("/error/status", HTTP_GET, handleGetErrorStatus);
-  server.on("/relay/oneclick", HTTP_POST, handleOneClickLight);
   server.on("/temp-schedules", HTTP_GET, handleGetTemporarySchedules);
   server.on("/temp-schedule/add", HTTP_POST, handleAddTemporarySchedule);
   server.on("/temp-schedule/delete", HTTP_DELETE, handleDeleteTemporarySchedule);
@@ -3295,10 +3294,6 @@ void handleLogsPage() {
   server.send_P(200, "text/html", logsPage);
 }
 
-void handleTempCtrlPage() {
-  server.send_P(200, "text/html", tempctrl);
-}
-
 void handleTempSchedulesPage() {
   server.send_P(200, "text/html", tempschedules);
 }
@@ -3335,22 +3330,8 @@ void secondaryLoop(void* parameter) {
       }
 
       unsigned long currentTime = millis();
-      
-      if (!startupemail && (currentTime - lastEmailAttempt > EMAIL_RETRY_INTERVAL)) {
-        lastEmailAttempt = currentTime;
-        startupemail = true;
-
-        struct tm timeinfo;
-        if (getLocalTime(&timeinfo)) {
-          last90MinCheck = timeinfo.tm_hour * 3600 + timeinfo.tm_min * 60 + timeinfo.tm_sec;
-        }
-      }
-
-      if (pointemail && (currentTime - lastEmailAttempt > EMAIL_RETRY_INTERVAL)) {
-        lastEmailAttempt = currentTime;
-        pointemail = false;
-      }
     }
+      
     delay(5);
   }
 }
@@ -3389,10 +3370,6 @@ void mainLoop(void* parameter) {
             String timeStr = String(timeinfo.tm_hour) + ":" + (timeinfo.tm_min < 10 ? "0" : "") + String(timeinfo.tm_min);
             storeLogEntry("Device is powered on at " + timeStr);
             last90MinCheck = currentSeconds;
-
-            if (startupemail && !pointemail) {
-              pointemail = true;
-            }
           }
 
           static int prevDay = -1;
@@ -3411,7 +3388,6 @@ void mainLoop(void* parameter) {
       checkScheduleslaunch();
       storeLogEntry("Startup Schedule Check Success");
       hasLaunchedSchedules = true;
-      startupemail = false;
 
       if (WiFi.status() == WL_CONNECTED) {
         delay(100);
