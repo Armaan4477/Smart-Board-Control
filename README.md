@@ -58,18 +58,18 @@ An ESP32-based intelligent relay control system with web interface, scheduling c
 
 | Component | GPIO Pin | Description |
 |-----------|----------|-------------|
-| Relay 1 | GPIO 16 | First relay control (Socket 1) |
-| Relay 2 | GPIO 17 | Second relay control (Socket 2) |
-| Relay 3 | GPIO 18 | Third relay control (Socket 3) |
-| Relay 4 | GPIO 19 | Fourth relay control (Socket 4) |
-| Switch 1 | GPIO 23 | Manual control button 1 |
-| Switch 2 | GPIO 22 | Manual control button 2 |
-| Switch 3 | GPIO 25 | Manual control button 3 |
-| Switch 4 | GPIO 26 | Manual control button 4 |
-| LED 1 | GPIO 21 | Status indicator for Relay 1 |
-| LED 2 | GPIO 32 | Status indicator for Relay 2 |
-| LED 3 | GPIO 33 | Status indicator for Relay 3 |
-| LED 4 | GPIO 27 | Status indicator for Relay 4 |
+| Relay 1 | GPIO 13 | First relay control (Socket 1) |
+| Relay 2 | GPIO 12 | Second relay control (Socket 2) |
+| Relay 3 | GPIO 14 | Third relay control (Socket 3) |
+| Relay 4 | GPIO 27 | Fourth relay control (Socket 4) |
+| Switch 1 | GPIO 26 | Manual control button 1 |
+| Switch 2 | GPIO 25 | Manual control button 2 |
+| Switch 3 | GPIO 33 | Manual control button 3 |
+| Switch 4 | GPIO 32 | Manual control button 4 |
+| LED 1 | GPIO 18 | Status indicator for Relay 1 |
+| LED 2 | GPIO 19 | Status indicator for Relay 2 |
+| LED 3 | GPIO 22 | Status indicator for Relay 3 |
+| LED 4 | GPIO 23 | Status indicator for Relay 4 |
 
 ## Installation
 
@@ -78,7 +78,7 @@ An ESP32-based intelligent relay control system with web interface, scheduling c
 2. ESP32 board support installed
 
 ### Required Libraries
-Install the following libraries via Arduino Library Manager:
+Install the following libraries:
 - **WiFi** (Built-in with ESP32)
 - **WebServer** (Built-in with ESP32)
 - **WebSocketsServer** by Markus Sattler
