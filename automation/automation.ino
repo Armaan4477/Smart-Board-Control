@@ -1497,9 +1497,6 @@ const char mainPage[] PROGMEM = R"html(
         function showLogs() {
             window.location.href = '/logs';
         }
-        function showHeaterControl() {
-            window.location.href = '/tempcontrol';
-        }
         function showTempSchedules() {
             window.location.href = '/tempschedules';
         }
@@ -3572,7 +3569,7 @@ void broadcastRelayStates() {
   message += ",\"relay1Name\":\"Socket 1\"";
   message += ",\"relay2Name\":\"Socket 2\"";
   message += ",\"relay3Name\":\"Socket 3\"";
-  message += ",\"relay4Name\":\"Heater\"}";
+  message += ",\"relay4Name\":\"Socket 4\"}";
 
   webSocket.broadcastTXT(message);
 }
