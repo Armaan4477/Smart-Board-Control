@@ -17,6 +17,7 @@ void handleLogsPage();
 void handleRelay1();
 void handleRelay2();
 void handleRelay3();
+void handleRelay4();
 void handleTime();
 void handleGetSchedules();
 void handleAddSchedule();
@@ -30,6 +31,8 @@ void secondaryLoop(void*);
 void mainLoop(void*);
 void checkoverride1();
 void checkoverride2();
+void checkoverride3();
+void checkoverride4();
 void overrideLEDState();
 void checkSchedules();
 void checkScheduleslaunch();
@@ -78,10 +81,14 @@ const int relay3 = 18;
 const int relay4 = 19;
 const int switch1Pin = 23;
 const int switch2Pin = 22;
+const int switch3Pin = 25;
+const int switch4Pin = 26;
 const int errorLEDPin = 21;
 
 bool overrideRelay1 = false;
 bool overrideRelay2 = false;
+bool overrideRelay3 = false;
+bool overrideRelay4 = false;
 bool relay1State = false;
 bool relay2State = false;
 bool relay3State = false;
@@ -133,13 +140,21 @@ unsigned long lastSwitch2Debounce = 0;
 const unsigned long DEBOUNCE_DELAY = 800;
 unsigned long switch1PressStartTime = 0;
 unsigned long switch2PressStartTime = 0;
+unsigned long switch3PressStartTime = 0;
+unsigned long switch4PressStartTime = 0;
 bool switch1LastState = false;
 bool switch2LastState = false;
+bool switch3LastState = false;
+bool switch4LastState = false;
 const unsigned long HOLD_DURATION = 1500;
 extern unsigned long switch1PressStartTime;
 extern unsigned long switch2PressStartTime;
+extern unsigned long switch3PressStartTime;
+extern unsigned long switch4PressStartTime;
 extern bool switch1LastState;
 extern bool switch2LastState;
+extern bool switch3LastState;
+extern bool switch4LastState;
 extern const unsigned long HOLD_DURATION;
 unsigned long lastBlinkTime = 0;
 const unsigned long BLINK_INTERVAL = 1000;
@@ -739,7 +754,7 @@ void handleGetLogs() {
 }
 
 void storeLogEntry(const String& msg) {
-  // Serial.println(msg);
+  Serial.println(msg);
   const int MAX_LOGS = 18;
   const int MAX_LOG_ID = 20;
 
@@ -852,9 +867,11 @@ void setup() {
   digitalWrite(relay1, HIGH);
   digitalWrite(relay2, HIGH);
   digitalWrite(relay3, HIGH);
-  digitalWrite(relay4, LOW);
+  digitalWrite(relay4, HIGH);
   pinMode(switch1Pin, INPUT_PULLUP);
   pinMode(switch2Pin, INPUT_PULLUP);
+  pinMode(switch3Pin, INPUT_PULLUP);
+  pinMode(switch4Pin, INPUT_PULLUP);
   pinMode(errorLEDPin, OUTPUT);
   digitalWrite(errorLEDPin, LOW);
 
@@ -900,6 +917,7 @@ void setup() {
   server.on("/relay/1", HTTP_ANY, handleRelay1);
   server.on("/relay/2", HTTP_ANY, handleRelay2);
   server.on("/relay/3", HTTP_ANY, handleRelay3);
+  server.on("/relay/4", HTTP_ANY, handleRelay4);
   server.on("/time", HTTP_GET, handleTime);
   server.on("/schedules", HTTP_GET, handleGetSchedules);
   server.on("/schedule/add", HTTP_POST, handleAddSchedule);
@@ -999,10 +1017,12 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length)
 
         String message = "{\"relay1\":" + String(relay1State || overrideRelay1) + 
                         ",\"relay2\":" + String(relay2State || overrideRelay2) + 
-                        ",\"relay3\":" + String(relay3State || overrideRelay1) + 
+                        ",\"relay3\":" + String(relay3State || overrideRelay3) + 
+                        ",\"relay4\":" + String(relay4State || overrideRelay4) + 
                         ",\"relay1Name\":\"Socket 1\"" + 
                         ",\"relay2Name\":\"Socket 2\"" + 
-                        ",\"relay3Name\":\"Socket 3\"}";
+                        ",\"relay3Name\":\"Socket 3\"" + 
+                        ",\"relay4Name\":\"Socket 4\"}";
         webSocket.sendTXT(num, message);
       }
       break;
@@ -1044,7 +1064,7 @@ const char mainPage[] PROGMEM = R"html(
     <link rel="shortcut icon" type="image/png" href="/favicon.png">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Aquarium Control</title>
+    <title>Board Control</title>
     <style>
         :root {
             --primary-color: #1976D2;
@@ -1286,7 +1306,7 @@ const char mainPage[] PROGMEM = R"html(
 </head>
 <body>
     <header>
-        <h1>Aquarium Control Panel</h1>
+        <h1>Board Control Panel</h1>
     </header>
     <div class="container">
         <div class="time-container">
@@ -1306,6 +1326,7 @@ const char mainPage[] PROGMEM = R"html(
                 <button class="button" onclick="toggleRelay(1)" id="btn1">Socket 1</button>
                 <button class="button" onclick="toggleRelay(2)" id="btn2">Socket 2</button>
                 <button class="button" onclick="toggleRelay(3)" id="btn3">Socket 3</button>
+                <button class="button" onclick="toggleRelay(4)" id="btn4">Socket 4</button>
             </div>
         </div>
 
@@ -1328,7 +1349,8 @@ const char mainPage[] PROGMEM = R"html(
         let relayNames = {
             1: "Socket 1",
             2: "Socket 2",
-            3: "Socket 3"
+            3: "Socket 3",
+            4: "Socket 4"
         };
 
         let socket = null;
@@ -1360,6 +1382,7 @@ const char mainPage[] PROGMEM = R"html(
                     if (data.relay1Name) relayNames[1] = data.relay1Name;
                     if (data.relay2Name) relayNames[2] = data.relay2Name;
                     if (data.relay3Name) relayNames[3] = data.relay3Name;
+                    if (data.relay4Name) relayNames[4] = data.relay4Name;
                     
                     if (data.relay1 !== undefined) {
                         relayStates[1] = data.relay1;
@@ -1372,6 +1395,10 @@ const char mainPage[] PROGMEM = R"html(
                     if (data.relay3 !== undefined) {
                         relayStates[3] = data.relay3;
                         updateButtonStyle(3);
+                    }
+                    if (data.relay4 !== undefined) {
+                        relayStates[4] = data.relay4;
+                        updateButtonStyle(4);
                     }
                 } catch (e) {
                     console.error('WebSocket message parsing error:', e);
@@ -1465,7 +1492,7 @@ const char mainPage[] PROGMEM = R"html(
                 .then(data => { 
                     relayStates = data; 
                     for(let relay in relayStates) {
-                        if (relay <= 3) {
+                        if (relay <= 4) {
                             updateButtonStyle(relay);
                         }
                     }
@@ -2362,6 +2389,7 @@ const char tempschedules[] PROGMEM = R"html(
                 <option value="1">Socket 1</option>
                 <option value="2">Socket 2</option>
                 <option value="3">Socket 3</option>
+                <option value="4">Socket 4</option>
             </select>
             <div id="tempRelayError" class="error">Please select a relay.</div>
 
@@ -2482,6 +2510,7 @@ const char tempschedules[] PROGMEM = R"html(
                     if (schedule.relay == 1) relayName = "Socket 1";
                     else if (schedule.relay == 2) relayName = "Socket 2";
                     else if (schedule.relay == 3) relayName = "Socket 3";
+                    else if (schedule.relay == 4) relayName = "Socket 4";
                     
                     row.insertCell(0).textContent = schedule.id;
                     row.insertCell(1).textContent = relayName;
@@ -3041,6 +3070,7 @@ const char mainSchedules[] PROGMEM = R"html(
                 <option value="1">Socket 1</option>
                 <option value="2">Socket 2</option>
                 <option value="3">Socket 3</option>
+                <option value="4">Socket 4</option>
             </select>
             <div id="relayError" class="error">Please select a relay.</div>
 
@@ -3217,6 +3247,7 @@ const char mainSchedules[] PROGMEM = R"html(
                         if (schedule.relay == 1) relayName = "Socket 1";
                         else if (schedule.relay == 2) relayName = "Socket 2";
                         else if (schedule.relay == 3) relayName = "Socket 3";
+                        else if (schedule.relay == 4) relayName = "Socket 4";
                         
                         row.insertCell(0).textContent = relayName;
                         row.insertCell(1).textContent = `${String(schedule.onHour).padStart(2, '0')}:${String(schedule.onMinute).padStart(2, '0')}`;
@@ -3306,6 +3337,22 @@ void loop() {
 void secondaryLoop(void* parameter) {
   
   for (;;) {
+    server.handleClient();
+    webSocket.loop();
+      
+    delay(5);
+  }
+}
+
+void mainLoop(void* parameter) {
+  for (;;) {
+    resetWatchdog();
+    checkoverride1();
+    checkoverride2();
+    checkoverride3();
+    checkoverride4();
+    overrideLEDState();
+
     if (WiFi.status() != WL_CONNECTED) {
       unsigned long currentMillis = millis();
       if (currentMillis - lastWifiConnectAttempt > WIFI_RECONNECT_INTERVAL) {
@@ -3321,26 +3368,7 @@ void secondaryLoop(void* parameter) {
         storeLogEntry("WiFi connection restored");
         wifiConnectionErrorLogged = false;
       }
-
-      if (!validTimeSync) {
-        attemptTimeSync();
-      }
-
-      unsigned long currentTime = millis();
     }
-      
-    delay(5);
-  }
-}
-
-void mainLoop(void* parameter) {
-  for (;;) {
-    server.handleClient();
-    webSocket.loop();
-    resetWatchdog();
-    checkoverride1();
-    checkoverride2();
-    overrideLEDState();
 
     if (!validTimeSync && WiFi.status() == WL_CONNECTED) {
       unsigned long currentMillis = millis();
@@ -3419,8 +3447,12 @@ void checkSchedules() {
           activateRelay(2, false);
         }
       } else if (schedule.relayNumber == 3) {
-        if (!relay3State && !overrideRelay1) {
+        if (!relay3State && !overrideRelay3) {
           activateRelay(3, false);
+        }
+      } else if (schedule.relayNumber == 4) {
+        if (!relay4State && !overrideRelay4) {
+          activateRelay(4, false);
         }
       }
     } else if (hours == schedule.offHour && minutes == schedule.offMinute && seconds == 0) {
@@ -3433,8 +3465,12 @@ void checkSchedules() {
           deactivateRelay(2, false);
         }
       } else if (schedule.relayNumber == 3) {
-        if (relay3State && !overrideRelay1) {
+        if (relay3State && !overrideRelay3) {
           deactivateRelay(3, false);
+        }
+      } else if (schedule.relayNumber == 4) {
+        if (relay4State && !overrideRelay4) {
+          deactivateRelay(4, false);
         }
       }
     }
@@ -3455,6 +3491,7 @@ void checkScheduleslaunch() {
   bool relay1ShouldBeOn = false;
   bool relay2ShouldBeOn = false;
   bool relay3ShouldBeOn = false;
+  bool relay4ShouldBeOn = false;
 
   for (const Schedule& schedule : schedules) {
     if (!schedule.enabled || !schedule.daysOfWeek[weekdayIndex]) {
@@ -3477,6 +3514,8 @@ void checkScheduleslaunch() {
       relay2ShouldBeOn |= shouldBeOn;
     } else if (schedule.relayNumber == 3) {
       relay3ShouldBeOn |= shouldBeOn;
+    } else if (schedule.relayNumber == 4) {
+      relay4ShouldBeOn |= shouldBeOn;
     }
   }
 
@@ -3488,7 +3527,9 @@ void checkScheduleslaunch() {
       deactivateRelay(1, false);
       storeLogEntry("Relay 1 deactivated by startup schedule check");
     }
+  }
 
+  if (!overrideRelay3) {
     if (relay3ShouldBeOn) {
       activateRelay(3, false);
       storeLogEntry("Relay 3 activated by startup schedule check");
@@ -3507,10 +3548,20 @@ void checkScheduleslaunch() {
       storeLogEntry("Relay 2 deactivated by startup schedule check");
     }
   }
+
+  if (!overrideRelay4) {
+    if (relay4ShouldBeOn) {
+      activateRelay(4, false);
+      storeLogEntry("Relay 4 activated by startup schedule check");
+    } else {
+      deactivateRelay(4, false);
+      storeLogEntry("Relay 4 deactivated by startup schedule check");
+    }
+  }
 }
 
 void activateRelay(int relayNum, bool manual) {
-  if (!manual && ((relayNum == 1 && overrideRelay1) || (relayNum == 2 && overrideRelay2) || (relayNum == 3 && overrideRelay1))) {
+  if (!manual && ((relayNum == 1 && overrideRelay1) || (relayNum == 2 && overrideRelay2) || (relayNum == 3 && overrideRelay3) || (relayNum == 4 && overrideRelay4))) {
     storeLogEntry("Relay " + String(relayNum) + " is overridden. Activation skipped.");
     return;
   }
@@ -3531,12 +3582,17 @@ void activateRelay(int relayNum, bool manual) {
       relay3State = true;
       storeLogEntry("Relay 3 activated.");
       break;
+    case 4:
+      digitalWrite(relay4, LOW);
+      relay4State = true;
+      storeLogEntry("Relay 4 activated.");
+      break;
   }
   broadcastRelayStates();
 }
 
 void deactivateRelay(int relayNum, bool manual) {
-  if (!manual && ((relayNum == 1 && overrideRelay1) || (relayNum == 2 && overrideRelay2) || (relayNum == 3 && overrideRelay1))) {
+  if (!manual && ((relayNum == 1 && overrideRelay1) || (relayNum == 2 && overrideRelay2) || (relayNum == 3 && overrideRelay3) || (relayNum == 4 && overrideRelay4))) {
     storeLogEntry("Relay " + String(relayNum) + " is overridden. Deactivation skipped.");
     return;
   }
@@ -3557,13 +3613,18 @@ void deactivateRelay(int relayNum, bool manual) {
       relay3State = false;
       storeLogEntry("Relay 3 deactivated.");
       break;
+    case 4:
+      digitalWrite(relay4, HIGH);
+      relay4State = false;
+      storeLogEntry("Relay 4 deactivated.");
+      break;
   }
   broadcastRelayStates();
 }
 
 void broadcastRelayStates() {
 
-  String message = "{\"relay1\":" + String(relay1State || overrideRelay1) + ",\"relay2\":" + String(relay2State || overrideRelay2) + ",\"relay3\":" + String(relay3State || overrideRelay1) + ",\"relay4\":";
+  String message = "{\"relay1\":" + String(relay1State || overrideRelay1) + ",\"relay2\":" + String(relay2State || overrideRelay2) + ",\"relay3\":" + String(relay3State || overrideRelay3) + ",\"relay4\":" + String(relay4State || overrideRelay4);
 
 
   message += ",\"relay1Name\":\"Socket 1\"";
@@ -3741,7 +3802,7 @@ void handleRoot() {
 }
 
 void toggleRelay(int relayPin, bool& relayState) {
-  if ((relayPin == relay1 && overrideRelay1) || (relayPin == relay2 && overrideRelay2)) {
+  if ((relayPin == relay1 && overrideRelay1) || (relayPin == relay2 && overrideRelay2) || (relayPin == relay3 && overrideRelay3) || (relayPin == relay4 && overrideRelay4)) {
     storeLogEntry("Physical override active, ignoring toggle.");
     return;
   }
@@ -3779,7 +3840,7 @@ void handleRelay2() {
 
 void handleRelay3() {
   if (server.method() == HTTP_POST) {
-    if (overrideRelay1) {
+    if (overrideRelay3) {
       server.send(403, "application/json", "{\"error\":\"Physical override active\"}");
       return;
     }
@@ -3787,6 +3848,19 @@ void handleRelay3() {
     server.send(200, "application/json", "{\"state\":" + String(relay3State) + "}");
   } else if (server.method() == HTTP_GET) {
     server.send(200, "application/json", "{\"state\":" + String(relay3State) + "}");
+  }
+}
+
+void handleRelay4() {
+  if (server.method() == HTTP_POST) {
+    if (overrideRelay4) {
+      server.send(403, "application/json", "{\"error\":\"Physical override active\"}");
+      return;
+    }
+    toggleRelay(relay4, relay4State);
+    server.send(200, "application/json", "{\"state\":" + String(relay4State) + "}");
+  } else if (server.method() == HTTP_GET) {
+    server.send(200, "application/json", "{\"state\":" + String(relay4State) + "}");
   }
 }
 
@@ -3814,8 +3888,8 @@ void handleRelayStatus() {
   String json = "{";
   json += "\"1\":" + String(relay1State || overrideRelay1) + ",";
   json += "\"2\":" + String(relay2State || overrideRelay2) + ",";
-  json += "\"3\":" + String(relay3State || overrideRelay1) + ",";
-  json += "\"4\":" + String(relay4State) + ",";
+  json += "\"3\":" + String(relay3State || overrideRelay3) + ",";
+  json += "\"4\":" + String(relay4State || overrideRelay4) + ",";
   server.send(200, "application/json", json);
 }
 
@@ -3844,20 +3918,14 @@ void checkoverride1() {
     if (!relay1State) {
       activateRelay(1, true);
     }
-    if (!relay3State) {
-      activateRelay(3, true);
-    }
-    storeLogEntry("Relay 1 and 3 override activated");
+    storeLogEntry("Relay 1 override activated");
     broadcastRelayStates();
   } else if (!currentReading && overrideRelay1) {
     overrideRelay1 = false;
     if (relay1State) {
       deactivateRelay(1, true);
     }
-    if (relay3State) {
-      deactivateRelay(3, true);
-    }
-    storeLogEntry("Relay 1 and 3 override deactivated");
+    storeLogEntry("Relay 1 override deactivated");
     broadcastRelayStates();
   }
 }
@@ -3889,8 +3957,62 @@ void checkoverride2() {
   }
 }
 
+void checkoverride3() {
+  bool currentReading = (digitalRead(switch3Pin) == LOW);
+
+  if (currentReading != switch3LastState) {
+    if (currentReading) {
+      switch3PressStartTime = millis();
+    }
+    switch3LastState = currentReading;
+  }
+
+  if (currentReading && !overrideRelay3 && (millis() - switch3PressStartTime >= HOLD_DURATION)) {
+    overrideRelay3 = true;
+    if (!relay3State) {
+      activateRelay(3, true);
+    }
+    storeLogEntry("Relay 3 override activated");
+    broadcastRelayStates();
+  } else if (!currentReading && overrideRelay3) {
+    overrideRelay3 = false;
+    if (relay3State) {
+      deactivateRelay(3, true);
+    }
+    storeLogEntry("Relay 3 override deactivated");
+    broadcastRelayStates();
+  }
+}
+
+void checkoverride4() {
+  bool currentReading = (digitalRead(switch4Pin) == LOW);
+
+  if (currentReading != switch4LastState) {
+    if (currentReading) {
+      switch4PressStartTime = millis();
+    }
+    switch4LastState = currentReading;
+  }
+
+  if (currentReading && !overrideRelay4 && (millis() - switch4PressStartTime >= HOLD_DURATION)) {
+    overrideRelay4 = true;
+    if (!relay4State) {
+      activateRelay(4, true);
+    }
+    storeLogEntry("Relay 4 override activated");
+    broadcastRelayStates();
+  } else if (!currentReading && overrideRelay4) {
+    overrideRelay4 = false;
+    if (relay4State) {
+      deactivateRelay(4, true);
+    }
+    storeLogEntry("Relay 4 override deactivated");
+    broadcastRelayStates();
+  }
+}
+
 void overrideLEDState() {
-  bool anyOverrideActive = overrideRelay1 || overrideRelay2;
+  bool anyOverrideActive = overrideRelay1 || overrideRelay2 || overrideRelay3 || overrideRelay4;
 
   if (hasError) {
     return;
@@ -4065,9 +4187,14 @@ void checkTemporarySchedules() {
           storeLogEntry("Temporary schedule activated relay 2");
         }
       } else if (schedule.relayNumber == 3) {
-        if (!relay3State && !overrideRelay1) {
+        if (!relay3State && !overrideRelay3) {
           activateRelay(3, false);
           storeLogEntry("Temporary schedule activated relay 3");
+        }
+      } else if (schedule.relayNumber == 4) {
+        if (!relay4State && !overrideRelay4) {
+          activateRelay(4, false);
+          storeLogEntry("Temporary schedule activated relay 4");
         }
       }
 
@@ -4088,9 +4215,14 @@ void checkTemporarySchedules() {
           storeLogEntry("Temporary schedule deactivated relay 2");
         }
       } else if (schedule.relayNumber == 3) {
-        if (relay3State && !overrideRelay1) {
+        if (relay3State && !overrideRelay3) {
           deactivateRelay(3, false);
           storeLogEntry("Temporary schedule deactivated relay 3");
+        }
+      } else if (schedule.relayNumber == 4) {
+        if (relay4State && !overrideRelay4) {
+          deactivateRelay(4, false);
+          storeLogEntry("Temporary schedule deactivated relay 4");
         }
       }
 
