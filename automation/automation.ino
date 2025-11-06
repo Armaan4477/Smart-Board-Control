@@ -29,11 +29,10 @@ void handleGetErrorStatus();
 
 void secondaryLoop(void*);
 void mainLoop(void*);
-void checkoverride1();
-void checkoverride2();
-void checkoverride3();
-void checkoverride4();
-void overrideLEDState();
+void checkPushButton1();
+void checkPushButton2();
+void checkPushButton3();
+void checkPushButton4();
 void checkSchedules();
 void checkScheduleslaunch();
 void activateRelay(int, bool);
@@ -85,10 +84,6 @@ const int switch3Pin = 25;
 const int switch4Pin = 26;
 const int errorLEDPin = 21;
 
-bool overrideRelay1 = false;
-bool overrideRelay2 = false;
-bool overrideRelay3 = false;
-bool overrideRelay4 = false;
 bool relay1State = false;
 bool relay2State = false;
 bool relay3State = false;
@@ -137,28 +132,13 @@ const std::vector<String> allowedIPs = {
 };
 unsigned long lastSwitch1Debounce = 0;
 unsigned long lastSwitch2Debounce = 0;
+unsigned long lastSwitch3Debounce = 0;
+unsigned long lastSwitch4Debounce = 0;
 const unsigned long DEBOUNCE_DELAY = 800;
-unsigned long switch1PressStartTime = 0;
-unsigned long switch2PressStartTime = 0;
-unsigned long switch3PressStartTime = 0;
-unsigned long switch4PressStartTime = 0;
-bool switch1LastState = false;
-bool switch2LastState = false;
-bool switch3LastState = false;
-bool switch4LastState = false;
-const unsigned long HOLD_DURATION = 1500;
-extern unsigned long switch1PressStartTime;
-extern unsigned long switch2PressStartTime;
-extern unsigned long switch3PressStartTime;
-extern unsigned long switch4PressStartTime;
-extern bool switch1LastState;
-extern bool switch2LastState;
-extern bool switch3LastState;
-extern bool switch4LastState;
-extern const unsigned long HOLD_DURATION;
-unsigned long lastBlinkTime = 0;
-const unsigned long BLINK_INTERVAL = 1000;
-bool blinkState = false;
+bool lastButton1State = HIGH;
+bool lastButton2State = HIGH;
+bool lastButton3State = HIGH;
+bool lastButton4State = HIGH;
 const char* authUsername = "admin";
 const char* authPassword = "12345678";
 
@@ -1015,10 +995,10 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length)
         IPAddress ip = webSocket.remoteIP(num);
         storeLogEntry("WebSocket " + String(num) + " Connected from " + ip.toString());
 
-        String message = "{\"relay1\":" + String(relay1State || overrideRelay1) + 
-                        ",\"relay2\":" + String(relay2State || overrideRelay2) + 
-                        ",\"relay3\":" + String(relay3State || overrideRelay3) + 
-                        ",\"relay4\":" + String(relay4State || overrideRelay4) + 
+        String message = "{\"relay1\":" + String(relay1State) + 
+                        ",\"relay2\":" + String(relay2State) + 
+                        ",\"relay3\":" + String(relay3State) + 
+                        ",\"relay4\":" + String(relay4State) + 
                         ",\"relay1Name\":\"Socket 1\"" + 
                         ",\"relay2Name\":\"Socket 2\"" + 
                         ",\"relay3Name\":\"Socket 3\"" + 
@@ -3347,11 +3327,10 @@ void secondaryLoop(void* parameter) {
 void mainLoop(void* parameter) {
   for (;;) {
     resetWatchdog();
-    checkoverride1();
-    checkoverride2();
-    checkoverride3();
-    checkoverride4();
-    overrideLEDState();
+    checkPushButton1();
+    checkPushButton2();
+    checkPushButton3();
+    checkPushButton4();
 
     if (WiFi.status() != WL_CONNECTED) {
       unsigned long currentMillis = millis();
@@ -3439,37 +3418,37 @@ void checkSchedules() {
 
     if (hours == schedule.onHour && minutes == schedule.onMinute && seconds == 0) {
       if (schedule.relayNumber == 1) {
-        if (!relay1State && !overrideRelay1) {
+        if (!relay1State) {
           activateRelay(1, false);
         }
       } else if (schedule.relayNumber == 2) {
-        if (!relay2State && !overrideRelay2) {
+        if (!relay2State) {
           activateRelay(2, false);
         }
       } else if (schedule.relayNumber == 3) {
-        if (!relay3State && !overrideRelay3) {
+        if (!relay3State) {
           activateRelay(3, false);
         }
       } else if (schedule.relayNumber == 4) {
-        if (!relay4State && !overrideRelay4) {
+        if (!relay4State) {
           activateRelay(4, false);
         }
       }
     } else if (hours == schedule.offHour && minutes == schedule.offMinute && seconds == 0) {
       if (schedule.relayNumber == 1) {
-        if (relay1State && !overrideRelay1) {
+        if (relay1State) {
           deactivateRelay(1, false);
         }
       } else if (schedule.relayNumber == 2) {
-        if (relay2State && !overrideRelay2) {
+        if (relay2State) {
           deactivateRelay(2, false);
         }
       } else if (schedule.relayNumber == 3) {
-        if (relay3State && !overrideRelay3) {
+        if (relay3State) {
           deactivateRelay(3, false);
         }
       } else if (schedule.relayNumber == 4) {
-        if (relay4State && !overrideRelay4) {
+        if (relay4State) {
           deactivateRelay(4, false);
         }
       }
@@ -3519,53 +3498,40 @@ void checkScheduleslaunch() {
     }
   }
 
-  if (!overrideRelay1) {
-    if (relay1ShouldBeOn) {
-      activateRelay(1, false);
-      storeLogEntry("Relay 1 activated by startup schedule check");
-    } else {
-      deactivateRelay(1, false);
-      storeLogEntry("Relay 1 deactivated by startup schedule check");
-    }
+  if (relay1ShouldBeOn) {
+    activateRelay(1, false);
+    storeLogEntry("Relay 1 activated by startup schedule check");
+  } else {
+    deactivateRelay(1, false);
+    storeLogEntry("Relay 1 deactivated by startup schedule check");
   }
 
-  if (!overrideRelay3) {
-    if (relay3ShouldBeOn) {
-      activateRelay(3, false);
-      storeLogEntry("Relay 3 activated by startup schedule check");
-    } else {
-      deactivateRelay(3, false);
-      storeLogEntry("Relay 3 deactivated by startup schedule check");
-    }
+  if (relay3ShouldBeOn) {
+    activateRelay(3, false);
+    storeLogEntry("Relay 3 activated by startup schedule check");
+  } else {
+    deactivateRelay(3, false);
+    storeLogEntry("Relay 3 deactivated by startup schedule check");
   }
 
-  if (!overrideRelay2) {
-    if (relay2ShouldBeOn) {
-      activateRelay(2, false);
-      storeLogEntry("Relay 2 activated by startup schedule check");
-    } else {
-      deactivateRelay(2, false);
-      storeLogEntry("Relay 2 deactivated by startup schedule check");
-    }
+  if (relay2ShouldBeOn) {
+    activateRelay(2, false);
+    storeLogEntry("Relay 2 activated by startup schedule check");
+  } else {
+    deactivateRelay(2, false);
+    storeLogEntry("Relay 2 deactivated by startup schedule check");
   }
 
-  if (!overrideRelay4) {
-    if (relay4ShouldBeOn) {
-      activateRelay(4, false);
-      storeLogEntry("Relay 4 activated by startup schedule check");
-    } else {
-      deactivateRelay(4, false);
-      storeLogEntry("Relay 4 deactivated by startup schedule check");
-    }
+  if (relay4ShouldBeOn) {
+    activateRelay(4, false);
+    storeLogEntry("Relay 4 activated by startup schedule check");
+  } else {
+    deactivateRelay(4, false);
+    storeLogEntry("Relay 4 deactivated by startup schedule check");
   }
 }
 
 void activateRelay(int relayNum, bool manual) {
-  if (!manual && ((relayNum == 1 && overrideRelay1) || (relayNum == 2 && overrideRelay2) || (relayNum == 3 && overrideRelay3) || (relayNum == 4 && overrideRelay4))) {
-    storeLogEntry("Relay " + String(relayNum) + " is overridden. Activation skipped.");
-    return;
-  }
-
   switch (relayNum) {
     case 1:
       digitalWrite(relay1, LOW);
@@ -3592,11 +3558,6 @@ void activateRelay(int relayNum, bool manual) {
 }
 
 void deactivateRelay(int relayNum, bool manual) {
-  if (!manual && ((relayNum == 1 && overrideRelay1) || (relayNum == 2 && overrideRelay2) || (relayNum == 3 && overrideRelay3) || (relayNum == 4 && overrideRelay4))) {
-    storeLogEntry("Relay " + String(relayNum) + " is overridden. Deactivation skipped.");
-    return;
-  }
-
   switch (relayNum) {
     case 1:
       digitalWrite(relay1, HIGH);
@@ -3624,7 +3585,7 @@ void deactivateRelay(int relayNum, bool manual) {
 
 void broadcastRelayStates() {
 
-  String message = "{\"relay1\":" + String(relay1State || overrideRelay1) + ",\"relay2\":" + String(relay2State || overrideRelay2) + ",\"relay3\":" + String(relay3State || overrideRelay3) + ",\"relay4\":" + String(relay4State || overrideRelay4);
+  String message = "{\"relay1\":" + String(relay1State) + ",\"relay2\":" + String(relay2State) + ",\"relay3\":" + String(relay3State) + ",\"relay4\":" + String(relay4State);
 
 
   message += ",\"relay1Name\":\"Socket 1\"";
@@ -3802,10 +3763,6 @@ void handleRoot() {
 }
 
 void toggleRelay(int relayPin, bool& relayState) {
-  if ((relayPin == relay1 && overrideRelay1) || (relayPin == relay2 && overrideRelay2) || (relayPin == relay3 && overrideRelay3) || (relayPin == relay4 && overrideRelay4)) {
-    storeLogEntry("Physical override active, ignoring toggle.");
-    return;
-  }
   relayState = !relayState;
   digitalWrite(relayPin, relayState ? LOW : HIGH);
   storeLogEntry("Relay state changed to: " + String(relayState));
@@ -3814,10 +3771,6 @@ void toggleRelay(int relayPin, bool& relayState) {
 
 void handleRelay1() {
   if (server.method() == HTTP_POST) {
-    if (overrideRelay1) {
-      server.send(403, "application/json", "{\"error\":\"Physical override active\"}");
-      return;
-    }
     toggleRelay(relay1, relay1State);
     server.send(200, "application/json", "{\"state\":" + String(relay1State) + "}");
   } else if (server.method() == HTTP_GET) {
@@ -3827,10 +3780,6 @@ void handleRelay1() {
 
 void handleRelay2() {
   if (server.method() == HTTP_POST) {
-    if (overrideRelay2) {
-      server.send(403, "application/json", "{\"error\":\"Physical override active\"}");
-      return;
-    }
     toggleRelay(relay2, relay2State);
     server.send(200, "application/json", "{\"state\":" + String(relay2State) + "}");
   } else if (server.method() == HTTP_GET) {
@@ -3840,10 +3789,6 @@ void handleRelay2() {
 
 void handleRelay3() {
   if (server.method() == HTTP_POST) {
-    if (overrideRelay3) {
-      server.send(403, "application/json", "{\"error\":\"Physical override active\"}");
-      return;
-    }
     toggleRelay(relay3, relay3State);
     server.send(200, "application/json", "{\"state\":" + String(relay3State) + "}");
   } else if (server.method() == HTTP_GET) {
@@ -3853,10 +3798,6 @@ void handleRelay3() {
 
 void handleRelay4() {
   if (server.method() == HTTP_POST) {
-    if (overrideRelay4) {
-      server.send(403, "application/json", "{\"error\":\"Physical override active\"}");
-      return;
-    }
     toggleRelay(relay4, relay4State);
     server.send(200, "application/json", "{\"state\":" + String(relay4State) + "}");
   } else if (server.method() == HTTP_GET) {
@@ -3886,10 +3827,10 @@ void handleTime() {
 
 void handleRelayStatus() {
   String json = "{";
-  json += "\"1\":" + String(relay1State || overrideRelay1) + ",";
-  json += "\"2\":" + String(relay2State || overrideRelay2) + ",";
-  json += "\"3\":" + String(relay3State || overrideRelay3) + ",";
-  json += "\"4\":" + String(relay4State || overrideRelay4) + ",";
+  json += "\"1\":" + String(relay1State) + ",";
+  json += "\"2\":" + String(relay2State) + ",";
+  json += "\"3\":" + String(relay3State) + ",";
+  json += "\"4\":" + String(relay4State) + ",";
   server.send(200, "application/json", json);
 }
 
@@ -3903,131 +3844,68 @@ void handleGetErrorStatus() {
   server.send(200, "application/json", json);
 }
 
-void checkoverride1() {
+void checkPushButton1() {
   bool currentReading = (digitalRead(switch1Pin) == LOW);
-
-  if (currentReading != switch1LastState) {
-    if (currentReading) {
-      switch1PressStartTime = millis();
+  
+  if (currentReading && lastButton1State == HIGH) {
+    unsigned long currentTime = millis();
+    if (currentTime - lastSwitch1Debounce > DEBOUNCE_DELAY) {
+      toggleRelay(relay1, relay1State);
+      storeLogEntry("Relay 1 toggled via hardware button");
+      broadcastRelayStates();
+      lastSwitch1Debounce = currentTime;
     }
-    switch1LastState = currentReading;
   }
-
-  if (currentReading && !overrideRelay1 && (millis() - switch1PressStartTime >= HOLD_DURATION)) {
-    overrideRelay1 = true;
-    if (!relay1State) {
-      activateRelay(1, true);
-    }
-    storeLogEntry("Relay 1 override activated");
-    broadcastRelayStates();
-  } else if (!currentReading && overrideRelay1) {
-    overrideRelay1 = false;
-    if (relay1State) {
-      deactivateRelay(1, true);
-    }
-    storeLogEntry("Relay 1 override deactivated");
-    broadcastRelayStates();
-  }
+  
+  lastButton1State = currentReading;
 }
 
-void checkoverride2() {
+void checkPushButton2() {
   bool currentReading = (digitalRead(switch2Pin) == LOW);
-
-  if (currentReading != switch2LastState) {
-    if (currentReading) {
-      switch2PressStartTime = millis();
+  
+  if (currentReading && lastButton2State == HIGH) {
+    unsigned long currentTime = millis();
+    if (currentTime - lastSwitch2Debounce > DEBOUNCE_DELAY) {
+      toggleRelay(relay2, relay2State);
+      storeLogEntry("Relay 2 toggled via hardware button");
+      broadcastRelayStates();
+      lastSwitch2Debounce = currentTime;
     }
-    switch2LastState = currentReading;
   }
-
-  if (currentReading && !overrideRelay2 && (millis() - switch2PressStartTime >= HOLD_DURATION)) {
-    overrideRelay2 = true;
-    if (!relay2State) {
-      activateRelay(2, true);
-    }
-    storeLogEntry("Relay 2 override activated");
-    broadcastRelayStates();
-  } else if (!currentReading && overrideRelay2) {
-    overrideRelay2 = false;
-    if (relay2State) {
-      deactivateRelay(2, true);
-    }
-    storeLogEntry("Relay 2 override deactivated");
-    broadcastRelayStates();
-  }
+  
+  lastButton2State = currentReading;
 }
 
-void checkoverride3() {
+void checkPushButton3() {
   bool currentReading = (digitalRead(switch3Pin) == LOW);
-
-  if (currentReading != switch3LastState) {
-    if (currentReading) {
-      switch3PressStartTime = millis();
+  
+  if (currentReading && lastButton3State == HIGH) {
+    unsigned long currentTime = millis();
+    if (currentTime - lastSwitch3Debounce > DEBOUNCE_DELAY) {
+      toggleRelay(relay3, relay3State);
+      storeLogEntry("Relay 3 toggled via hardware button");
+      broadcastRelayStates();
+      lastSwitch3Debounce = currentTime;
     }
-    switch3LastState = currentReading;
   }
-
-  if (currentReading && !overrideRelay3 && (millis() - switch3PressStartTime >= HOLD_DURATION)) {
-    overrideRelay3 = true;
-    if (!relay3State) {
-      activateRelay(3, true);
-    }
-    storeLogEntry("Relay 3 override activated");
-    broadcastRelayStates();
-  } else if (!currentReading && overrideRelay3) {
-    overrideRelay3 = false;
-    if (relay3State) {
-      deactivateRelay(3, true);
-    }
-    storeLogEntry("Relay 3 override deactivated");
-    broadcastRelayStates();
-  }
+  
+  lastButton3State = currentReading;
 }
 
-void checkoverride4() {
+void checkPushButton4() {
   bool currentReading = (digitalRead(switch4Pin) == LOW);
-
-  if (currentReading != switch4LastState) {
-    if (currentReading) {
-      switch4PressStartTime = millis();
+  
+  if (currentReading && lastButton4State == HIGH) {
+    unsigned long currentTime = millis();
+    if (currentTime - lastSwitch4Debounce > DEBOUNCE_DELAY) {
+      toggleRelay(relay4, relay4State);
+      storeLogEntry("Relay 4 toggled via hardware button");
+      broadcastRelayStates();
+      lastSwitch4Debounce = currentTime;
     }
-    switch4LastState = currentReading;
   }
-
-  if (currentReading && !overrideRelay4 && (millis() - switch4PressStartTime >= HOLD_DURATION)) {
-    overrideRelay4 = true;
-    if (!relay4State) {
-      activateRelay(4, true);
-    }
-    storeLogEntry("Relay 4 override activated");
-    broadcastRelayStates();
-  } else if (!currentReading && overrideRelay4) {
-    overrideRelay4 = false;
-    if (relay4State) {
-      deactivateRelay(4, true);
-    }
-    storeLogEntry("Relay 4 override deactivated");
-    broadcastRelayStates();
-  }
-}
-
-void overrideLEDState() {
-  bool anyOverrideActive = overrideRelay1 || overrideRelay2 || overrideRelay3 || overrideRelay4;
-
-  if (hasError) {
-    return;
-  }
-
-  if (anyOverrideActive) {
-    if (millis() - lastBlinkTime >= BLINK_INTERVAL) {
-      lastBlinkTime = millis();
-      blinkState = !blinkState;
-      digitalWrite(errorLEDPin, blinkState);
-    }
-  } else {
-    digitalWrite(errorLEDPin, LOW);
-    blinkState = false;
-  }
+  
+  lastButton4State = currentReading;
 }
 
 
@@ -4177,22 +4055,22 @@ void checkTemporarySchedules() {
 
     if (schedule.hasOnTime && hours == schedule.onHour && minutes == schedule.onMinute && seconds == 0) {
       if (schedule.relayNumber == 1) {
-        if (!relay1State && !overrideRelay1) {
+        if (!relay1State) {
           activateRelay(1, false);
           storeLogEntry("Temporary schedule activated relay 1");
         }
       } else if (schedule.relayNumber == 2) {
-        if (!relay2State && !overrideRelay2) {
+        if (!relay2State) {
           activateRelay(2, false);
           storeLogEntry("Temporary schedule activated relay 2");
         }
       } else if (schedule.relayNumber == 3) {
-        if (!relay3State && !overrideRelay3) {
+        if (!relay3State) {
           activateRelay(3, false);
           storeLogEntry("Temporary schedule activated relay 3");
         }
       } else if (schedule.relayNumber == 4) {
-        if (!relay4State && !overrideRelay4) {
+        if (!relay4State) {
           activateRelay(4, false);
           storeLogEntry("Temporary schedule activated relay 4");
         }
@@ -4205,22 +4083,22 @@ void checkTemporarySchedules() {
 
     if (schedule.hasOffTime && hours == schedule.offHour && minutes == schedule.offMinute && seconds == 0) {
       if (schedule.relayNumber == 1) {
-        if (relay1State && !overrideRelay1) {
+        if (relay1State) {
           deactivateRelay(1, false);
           storeLogEntry("Temporary schedule deactivated relay 1");
         }
       } else if (schedule.relayNumber == 2) {
-        if (relay2State && !overrideRelay2) {
+        if (relay2State) {
           deactivateRelay(2, false);
           storeLogEntry("Temporary schedule deactivated relay 2");
         }
       } else if (schedule.relayNumber == 3) {
-        if (relay3State && !overrideRelay3) {
+        if (relay3State) {
           deactivateRelay(3, false);
           storeLogEntry("Temporary schedule deactivated relay 3");
         }
       } else if (schedule.relayNumber == 4) {
-        if (relay4State && !overrideRelay4) {
+        if (relay4State) {
           deactivateRelay(4, false);
           storeLogEntry("Temporary schedule deactivated relay 4");
         }
