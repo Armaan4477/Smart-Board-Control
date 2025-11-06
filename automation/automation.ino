@@ -1024,14 +1024,7 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length)
         IPAddress ip = webSocket.remoteIP(num);
         storeLogEntry("WebSocket " + String(num) + " Connected from " + ip.toString());
 
-        String message = "{\"relay1\":" + String(relay1State) + 
-                        ",\"relay2\":" + String(relay2State) + 
-                        ",\"relay3\":" + String(relay3State) + 
-                        ",\"relay4\":" + String(relay4State) + 
-                        ",\"relay1Name\":\"Socket 1\"" + 
-                        ",\"relay2Name\":\"Socket 2\"" + 
-                        ",\"relay3Name\":\"Socket 3\"" + 
-                        ",\"relay4Name\":\"Socket 4\"}";
+        String message = "{\"relay1\":" + String(relay1State) + ",\"relay2\":" + String(relay2State) + ",\"relay3\":" + String(relay3State) + ",\"relay4\":" + String(relay4State) + ",\"relay1Name\":\"Socket 1\"" + ",\"relay2Name\":\"Socket 2\"" + ",\"relay3Name\":\"Socket 3\"" + ",\"relay4Name\":\"Socket 4\"}";
         webSocket.sendTXT(num, message);
       }
       break;
@@ -3344,11 +3337,11 @@ void loop() {
 }
 
 void secondaryLoop(void* parameter) {
-  
+
   for (;;) {
     server.handleClient();
     webSocket.loop();
-      
+
     delay(5);
   }
 }
@@ -3881,7 +3874,7 @@ void handleGetErrorStatus() {
 
 void checkPushButton1() {
   bool currentReading = (digitalRead(switch1Pin) == LOW);
-  
+
   if (currentReading && lastButton1State == HIGH) {
     unsigned long currentTime = millis();
     if (currentTime - lastSwitch1Debounce > DEBOUNCE_DELAY) {
@@ -3891,13 +3884,13 @@ void checkPushButton1() {
       lastSwitch1Debounce = currentTime;
     }
   }
-  
+
   lastButton1State = currentReading;
 }
 
 void checkPushButton2() {
   bool currentReading = (digitalRead(switch2Pin) == LOW);
-  
+
   if (currentReading && lastButton2State == HIGH) {
     unsigned long currentTime = millis();
     if (currentTime - lastSwitch2Debounce > DEBOUNCE_DELAY) {
@@ -3907,13 +3900,13 @@ void checkPushButton2() {
       lastSwitch2Debounce = currentTime;
     }
   }
-  
+
   lastButton2State = currentReading;
 }
 
 void checkPushButton3() {
   bool currentReading = (digitalRead(switch3Pin) == LOW);
-  
+
   if (currentReading && lastButton3State == HIGH) {
     unsigned long currentTime = millis();
     if (currentTime - lastSwitch3Debounce > DEBOUNCE_DELAY) {
@@ -3923,13 +3916,13 @@ void checkPushButton3() {
       lastSwitch3Debounce = currentTime;
     }
   }
-  
+
   lastButton3State = currentReading;
 }
 
 void checkPushButton4() {
   bool currentReading = (digitalRead(switch4Pin) == LOW);
-  
+
   if (currentReading && lastButton4State == HIGH) {
     unsigned long currentTime = millis();
     if (currentTime - lastSwitch4Debounce > DEBOUNCE_DELAY) {
@@ -3939,7 +3932,7 @@ void checkPushButton4() {
       lastSwitch4Debounce = currentTime;
     }
   }
-  
+
   lastButton4State = currentReading;
 }
 
@@ -3979,14 +3972,14 @@ void handleAddTemporarySchedule() {
       }
 
       int relayNumber = doc["relay"].as<int>();
-      
+
       int existingSchedulesCount = 0;
       for (const auto& schedule : temporarySchedules) {
         if (schedule.relayNumber == relayNumber) {
           existingSchedulesCount++;
         }
       }
-      
+
       if (existingSchedulesCount >= 2) {
         server.send(400, "application/json", "{\"error\":\"Each relay can have a maximum of 2 temporary schedules\"}");
         storeLogEntry("Add Temporary Schedule failed: Maximum schedules reached for relay " + String(relayNumber));
