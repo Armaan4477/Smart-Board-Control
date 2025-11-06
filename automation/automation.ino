@@ -3342,7 +3342,7 @@ void secondaryLoop(void* parameter) {
     server.handleClient();
     webSocket.loop();
 
-    delay(5);
+    delay(20);
   }
 }
 
