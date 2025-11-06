@@ -44,6 +44,8 @@ void handleDeleteTemporarySchedule();
 void checkTemporarySchedules();
 void handleTempSchedulesPage();
 void handleSchedulesPage();
+void updateLEDs();
+void blinkAllLEDs();
 
 struct Schedule {
   int id;
@@ -82,7 +84,10 @@ const int switch1Pin = 23;
 const int switch2Pin = 22;
 const int switch3Pin = 25;
 const int switch4Pin = 26;
-const int errorLEDPin = 21;
+const int led1Pin = 21;  // LED for Relay 1
+const int led2Pin = 32;  // LED for Relay 2
+const int led3Pin = 33;  // LED for Relay 3
+const int led4Pin = 27;  // LED for Relay 4
 
 bool relay1State = false;
 bool relay2State = false;
@@ -99,6 +104,7 @@ std::vector<LogEntry> logBuffer;
 bool spiffsInitialized = false;
 WiFiUDP ntpUDP;
 Ticker watchdogTicker;
+Ticker ledBlinkTicker;
 unsigned long lastLoopTime = 0;
 const unsigned long watchdogTimeout = 10000;
 unsigned long lastTimeUpdate = 0;
@@ -110,6 +116,7 @@ bool validTimeSync = false;
 unsigned long last90MinCheck = 0;
 const unsigned long CHECK_90MIN_INTERVAL = 5400;
 bool hasError = false;
+bool ledBlinkState = false;
 bool hasLaunchedSchedules = false;
 unsigned long logIdCounter = 0;
 std::vector<Schedule> schedules;
@@ -852,8 +859,14 @@ void setup() {
   pinMode(switch2Pin, INPUT_PULLUP);
   pinMode(switch3Pin, INPUT_PULLUP);
   pinMode(switch4Pin, INPUT_PULLUP);
-  pinMode(errorLEDPin, OUTPUT);
-  digitalWrite(errorLEDPin, LOW);
+  pinMode(led1Pin, OUTPUT);
+  pinMode(led2Pin, OUTPUT);
+  pinMode(led3Pin, OUTPUT);
+  pinMode(led4Pin, OUTPUT);
+  digitalWrite(led1Pin, LOW);
+  digitalWrite(led2Pin, LOW);
+  digitalWrite(led3Pin, LOW);
+  digitalWrite(led4Pin, LOW);
 
   Serial.begin(115200);
   delay(2000);
@@ -942,7 +955,7 @@ void setup() {
 void indicateError() {
   if (!triggerederror) {
     storeLogEntry("Error triggered.");
-    digitalWrite(errorLEDPin, HIGH);
+    ledBlinkTicker.attach(1.0, blinkAllLEDs);
     triggerederror = true;
   }
   hasError = true;
@@ -950,11 +963,27 @@ void indicateError() {
 
 void clearError() {
   storeLogEntry("Error cleared.");
-  digitalWrite(errorLEDPin, LOW);
+  ledBlinkTicker.detach();
   hasError = false;
   triggerederror = false;
   timeSyncErrorLogged = false;
   tempErrorLogged = false;
+  updateLEDs();
+}
+
+void updateLEDs() {
+  digitalWrite(led1Pin, relay1State ? HIGH : LOW);
+  digitalWrite(led2Pin, relay2State ? HIGH : LOW);
+  digitalWrite(led3Pin, relay3State ? HIGH : LOW);
+  digitalWrite(led4Pin, relay4State ? HIGH : LOW);
+}
+
+void blinkAllLEDs() {
+  ledBlinkState = !ledBlinkState;
+  digitalWrite(led1Pin, ledBlinkState ? HIGH : LOW);
+  digitalWrite(led2Pin, ledBlinkState ? HIGH : LOW);
+  digitalWrite(led3Pin, ledBlinkState ? HIGH : LOW);
+  digitalWrite(led4Pin, ledBlinkState ? HIGH : LOW);
 }
 
 void saveSchedulesToEEPROM() {
@@ -3554,6 +3583,9 @@ void activateRelay(int relayNum, bool manual) {
       storeLogEntry("Relay 4 activated.");
       break;
   }
+  if (!hasError) {
+    updateLEDs();
+  }
   broadcastRelayStates();
 }
 
@@ -3579,6 +3611,9 @@ void deactivateRelay(int relayNum, bool manual) {
       relay4State = false;
       storeLogEntry("Relay 4 deactivated.");
       break;
+  }
+  if (!hasError) {
+    updateLEDs();
   }
   broadcastRelayStates();
 }
