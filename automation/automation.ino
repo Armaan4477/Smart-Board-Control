@@ -9,8 +9,6 @@
 #include <Ticker.h>
 #include <TimeLib.h>
 #include <LittleFS.h>
-#include <OneWire.h>
-#include <DallasTemperature.h>
 #include <time.h>
 
 void handleRoot();
@@ -28,8 +26,7 @@ void handleRelayStatus();
 void handleClearError();
 void handleGetErrorStatus();
 void handleOneClickLight();
-void handleTemperature();
-void emailLoop(void*);
+void secondaryLoop(void*);
 void mainLoop(void*);
 void checkoverride1();
 void checkoverride2();
@@ -40,26 +37,12 @@ void activateRelay(int, bool);
 void deactivateRelay(int, bool);
 void toggleLightSequence();
 void broadcastRelayStates();
-void handleGetTemperatureSettings();
-void handleSaveTemperatureSettings();
-void handleToggleTemperatureControl();
-void loadTemperatureSettings();
-void saveTemperatureSettings();
-void checkTemperatureControl();
 void handleGetTemporarySchedules();
 void handleAddTemporarySchedule();
 void handleDeleteTemporarySchedule();
 void checkTemporarySchedules();
-void handleTempCtrlPage();
 void handleTempSchedulesPage();
 void handleSchedulesPage();
-void handleExternalTemperature();
-void loadCalibrationSettings();
-void saveCalibrationSettings();
-void handleGetCalibrationSettings();
-void handleSaveCalibrationSettings();
-void tempTemperature();
-void handleGetRawTemperatureData();
 
 struct Schedule {
   int id;
@@ -78,12 +61,6 @@ struct LogEntry {
   String message;
 };
 
-struct TemperatureData {
-  int minTemp;
-  int maxTemp;
-  bool enabled;
-};
-
 struct TemporarySchedule {
   int id;
   int relayNumber;
@@ -94,11 +71,6 @@ struct TemporarySchedule {
   bool hasOnTime;
   bool hasOffTime;
   bool enabled;
-};
-
-struct CalibrationData {
-  float internalOffset;
-  float externalOffset;
 };
 
 const int relay1 = 16;
@@ -138,19 +110,15 @@ unsigned long last90MinCheck = 0;
 const unsigned long CHECK_90MIN_INTERVAL = 5400;
 bool hasError = false;
 bool hasLaunchedSchedules = false;
-bool startupemail = false;
-bool pointemail = false;
 unsigned long logIdCounter = 0;
 std::vector<Schedule> schedules;
-std::vector<TemperatureData> temperatureData;
 std::vector<TemporarySchedule> temporarySchedules;
 int tempScheduleIdCounter = 0;
 const int EEPROM_SIZE = 512;
 const int SCHEDULE_SIZE = sizeof(Schedule);
 const int MAX_SCHEDULES = 10;
 const int SCHEDULE_START_ADDR = 0;
-const int TEMP_SETTINGS_START_ADDR = SCHEDULE_START_ADDR + (MAX_SCHEDULES * SCHEDULE_SIZE) + 1;
-const int TEMP_SETTINGS_SIZE = sizeof(TemperatureData);
+
 const int TOGGLE_DELAY = 500;
 const int TOGGLE_COUNT = 3;
 const std::vector<String> allowedIPs = {
@@ -179,27 +147,6 @@ const unsigned long BLINK_INTERVAL = 1000;
 bool blinkState = false;
 const char* authUsername = "admin";
 const char* authPassword = "12345678";
-
-#define ONE_WIRE_BUS 26
-#define EXTERNAL_ONE_WIRE_BUS 27
-OneWire oneWire(ONE_WIRE_BUS);
-OneWire externalOneWire(EXTERNAL_ONE_WIRE_BUS);
-DallasTemperature sensors(&oneWire);
-DallasTemperature externalSensors(&externalOneWire);
-DeviceAddress sensorAddress = { 0x28, 0x59, 0x71, 0x80, 0xE3, 0xE1, 0x3C, 0x50 };
-DeviceAddress externalSensorAddress = { 0x28, 0xCB, 0xBA, 0x57, 0x04, 0xE1, 0x3C, 0xE7 };
-unsigned long lastTemp = 0;
-unsigned long lastExternalTemp = 0;
-float lastValidTemperature = 0;
-float lastValidExternalTemperature = 0;
-const int MAX_EXTERNAL_TEMP_FAILURES = 8;
-int consecutiveExternalTempFailures = 0;
-bool hasExternalTempError = false;
-bool externalTempErrorLogged = false;
-
-CalibrationData sensorCalibration = {0.0, 0.0};
-const int CALIBRATION_START_ADDR = TEMP_SETTINGS_START_ADDR + TEMP_SETTINGS_SIZE + 1;
-const int CALIBRATION_SIZE = sizeof(CalibrationData);
 
 WiFiEventId_t wifiConnectHandler;
 
@@ -753,22 +700,11 @@ const unsigned char favicon_png[] PROGMEM = {
 
 const size_t favicon_png_len = sizeof(favicon_png);
 
-#define SMTP_HOST "smtp.gmail.com"
-#define SMTP_PORT 465
-const char* emailSenderAccount = "your-email@gmail.com";
-const char* emailSenderPassword = "your-app-specific-password";
-const char* emailRecipient = "recipient@email.com";
-const char* emailSubject = "Aquarium Control Logs";
-
-SMTPSession smtp;
 
 WebServer server(80);
 
 WebSocketsServer webSocket = WebSocketsServer(81);
 
-const int MAX_TEMP_FAILURES = 8;
-int consecutiveTempFailures = 0;
-bool hasTempError = false;
 
 const char* ntpServer = "pool.ntp.org";
 const long gmtOffset_sec = 19800;  // 5 hours 30 minutes offset for IST
@@ -923,11 +859,9 @@ void setup() {
   pinMode(errorLEDPin, OUTPUT);
   digitalWrite(errorLEDPin, LOW);
 
-  // Serial.begin(115200);
-  // delay(2000);
+  Serial.begin(115200);
+  delay(2000);
 
-  sensors.begin();
-  externalSensors.begin();
 
   if (!LittleFS.begin(true)) {
     storeLogEntry("Failed to mount FS");
@@ -962,7 +896,6 @@ void setup() {
   server.on("/favicon.png", HTTP_GET, handleFavicon);
   server.on("/logs", HTTP_GET, handleLogsPage);
   server.on("/logs/data", HTTP_GET, handleGetLogs);
-  server.on("/tempcontrol", HTTP_GET, handleTempCtrlPage);
   server.on("/tempschedules", HTTP_GET, handleTempSchedulesPage);
   server.on("/mainSchedules", HTTP_GET, handleSchedulesPage);
   server.on("/relay/1", HTTP_ANY, handleRelay1);
@@ -977,21 +910,13 @@ void setup() {
   server.on("/error/clear", HTTP_POST, handleClearError);
   server.on("/error/status", HTTP_GET, handleGetErrorStatus);
   server.on("/relay/oneclick", HTTP_POST, handleOneClickLight);
-  server.on("/temperature/settings", HTTP_GET, handleGetTemperatureSettings);
-  server.on("/temperature/save", HTTP_POST, handleSaveTemperatureSettings);
   server.on("/temp-schedules", HTTP_GET, handleGetTemporarySchedules);
   server.on("/temp-schedule/add", HTTP_POST, handleAddTemporarySchedule);
   server.on("/temp-schedule/delete", HTTP_DELETE, handleDeleteTemporarySchedule);
-  server.on("/calibration/settings", HTTP_GET, handleGetCalibrationSettings);
-  server.on("/calibration/save", HTTP_POST, handleSaveCalibrationSettings);
-  server.on("/temperature/raw", HTTP_GET, handleGetRawTemperatureData);
+
   server.begin();
   EEPROM.begin(EEPROM_SIZE);
   loadSchedulesFromEEPROM();
-  loadTemperatureSettings();
-  loadCalibrationSettings();
-
-  tempTemperature();
 
   webSocket.begin();
   webSocket.onEvent(webSocketEvent);
@@ -1000,8 +925,8 @@ void setup() {
   watchdogTicker.attach(1, checkWatchdog);
 
   xTaskCreatePinnedToCore(
-    emailLoop,
-    "emailTask",
+    secondaryLoop,
+    "secondaryTask",
     8192,
     NULL,
     1,
@@ -1062,95 +987,6 @@ void loadSchedulesFromEEPROM() {
   }
 }
 
-void loadTemperatureSettings() {
-  if (temperatureData.empty()) {
-    TemperatureData data;
-    data.minTemp = 24;
-    data.maxTemp = 29;
-    data.enabled = false;
-    temperatureData.push_back(data);
-  }
-
-  TemperatureData storedData;
-  EEPROM.get(TEMP_SETTINGS_START_ADDR, storedData);
-
-  if (storedData.minTemp >= 20 && storedData.minTemp <= 30 && storedData.maxTemp >= 20 && storedData.maxTemp <= 30 && storedData.minTemp < storedData.maxTemp) {
-    temperatureData[0] = storedData;
-    storeLogEntry("Temperature settings loaded from EEPROM");
-  } else {
-    storeLogEntry("Using default temperature settings");
-    saveTemperatureSettings();
-  }
-}
-
-void saveTemperatureSettings() {
-  if (!temperatureData.empty()) {
-    EEPROM.put(TEMP_SETTINGS_START_ADDR, temperatureData[0]);
-    EEPROM.commit();
-    storeLogEntry("Temperature settings saved to EEPROM");
-  }
-}
-
-void loadCalibrationSettings() {
-  CalibrationData storedData;
-  EEPROM.get(CALIBRATION_START_ADDR, storedData);
-
-  if (storedData.internalOffset >= -10.0 && storedData.internalOffset <= 10.0 && 
-      storedData.externalOffset >= -10.0 && storedData.externalOffset <= 10.0) {
-    sensorCalibration = storedData;
-    storeLogEntry("Sensor calibration loaded from EEPROM");
-  } else {
-    sensorCalibration.internalOffset = 0.0;
-    sensorCalibration.externalOffset = 0.0;
-    storeLogEntry("Using default sensor calibration settings");
-    saveCalibrationSettings();
-  }
-}
-
-void saveCalibrationSettings() {
-  EEPROM.put(CALIBRATION_START_ADDR, sensorCalibration);
-  EEPROM.commit();
-  storeLogEntry("Sensor calibration settings saved to EEPROM");
-}
-
-void handleGetCalibrationSettings() {
-  String json = "{";
-  json += "\"internalOffset\":" + String(sensorCalibration.internalOffset, 2) + ",";
-  json += "\"externalOffset\":" + String(sensorCalibration.externalOffset, 2);
-  json += "}";
-  server.send(200, "application/json", json);
-}
-
-void handleSaveCalibrationSettings() {
-  if (server.hasArg("plain")) {
-    String body = server.arg("plain");
-    StaticJsonDocument<200> doc;
-    DeserializationError error = deserializeJson(doc, body);
-
-    if (!error) {
-      float internalOffset = doc["internalOffset"];
-      float externalOffset = doc["externalOffset"];
-
-      if (internalOffset >= -10.0 && internalOffset <= 10.0 && 
-          externalOffset >= -10.0 && externalOffset <= 10.0) {
-        
-        sensorCalibration.internalOffset = internalOffset;
-        sensorCalibration.externalOffset = externalOffset;
-        
-        saveCalibrationSettings();
-        
-        server.send(200, "application/json", "{\"status\":\"success\"}");
-        storeLogEntry("Sensor calibration updated: Internal=" + String(internalOffset, 2) + "°C, External=" + String(externalOffset, 2) + "°C");
-        return;
-      } else {
-        server.send(400, "application/json", "{\"error\":\"Calibration offsets must be between -10°C and +10°C\"}");
-        return;
-      }
-    }
-  }
-  server.send(400, "application/json", "{\"error\":\"Invalid request\"}");
-}
-
 void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length) {
   switch (type) {
     case WStype_DISCONNECTED:
@@ -1166,7 +1002,6 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length)
         String message = "{\"relay1\":" + String(relay1State || overrideRelay1) + 
                         ",\"relay2\":" + String(relay2State || overrideRelay2) + 
                         ",\"relay3\":" + String(relay3State || overrideRelay1) + 
-                        ",\"temperature\":" + String(lastValidTemperature, 1) + 
                         ",\"relay1Name\":\"WaveMaker\"" + 
                         ",\"relay2Name\":\"Light\"" + 
                         ",\"relay3Name\":\"Air Pump\"}";
@@ -1295,59 +1130,6 @@ const char mainPage[] PROGMEM = R"html(
             font-size: 1.5rem;
             color: var(--text-light);
             margin: 5px 0;
-        }
-
-        .temperature-container {
-            margin: 20px 0;
-            padding: 20px;
-            background-color: var(--card-color);
-            border-radius: var(--border-radius);
-            box-shadow: var(--shadow);
-            transition: var(--transition);
-        }
-
-        .temperature-container:hover {
-            box-shadow: 0 5px 15px rgba(0,0,0,0.15);
-        }
-
-        .temperature-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-            align-items: center;
-        }
-
-        .temperature-item {
-            text-align: center;
-            padding: 15px;
-            background-color: #f8f9fa;
-            border-radius: var(--border-radius);
-            transition: var(--transition);
-        }
-
-        .temperature-item:hover {
-            background-color: #e9ecef;
-        }
-
-        .temperature-label {
-            font-size: 1rem;
-            color: var(--text-light);
-            margin-bottom: 8px;
-            font-weight: 500;
-        }
-
-        .temperature-value {
-            font-size: 1.8rem;
-            font-weight: bold;
-            color: var(--primary-color);
-        }
-
-        .temperature-item.internal {
-            border-left: 4px solid var(--success-color);
-        }
-
-        .temperature-item.external {
-            border-left: 4px solid var(--accent-color);
         }
 
         .control-section {
@@ -1479,14 +1261,6 @@ const char mainPage[] PROGMEM = R"html(
                 grid-template-columns: 1fr;
             }
 
-            .temperature-grid {
-                grid-template-columns: 1fr;
-                gap: 15px;
-            }
-
-            .temperature-value {
-                font-size: 1.5rem;
-            }
             
             #time {
                 font-size: 2rem;
@@ -1522,19 +1296,6 @@ const char mainPage[] PROGMEM = R"html(
             <div id="day">Loading day...</div>
             <div id="date">Loading date...</div>
         </div>
-        
-        <div class="temperature-container">
-            <div class="temperature-grid">
-                <div class="temperature-item internal">
-                    <div class="temperature-label">Internal Temperature</div>
-                    <div class="temperature-value" id="temperature">-- °C</div>
-                </div>
-                <div class="temperature-item external">
-                    <div class="temperature-label">External Temperature</div>
-                    <div class="temperature-value" id="externalTemperature">-- °C</div>
-                </div>
-            </div>
-        </div>
 
         <div id="errorSection">
             <p>Error detected!</p>
@@ -1556,7 +1317,6 @@ const char mainPage[] PROGMEM = R"html(
             <div class="navigation-buttons">
                 <button class="button nav-button" onclick="showTempSchedules()">Temporary Schedules</button>
                 <button class="button nav-button" onclick="showSchedules()">Main Schedules</button>
-                <button class="button nav-button" onclick="showHeaterControl()">Temperature Control</button>
                 <button class="button nav-button" onclick="showLogs()">System Logs</button>
             </div>
         </div>
@@ -1615,15 +1375,6 @@ const char mainPage[] PROGMEM = R"html(
                     if (data.relay3 !== undefined) {
                         relayStates[3] = data.relay3;
                         updateButtonStyle(3);
-                    }
-                    if (data.temperature !== undefined) {
-                        document.getElementById('temperature').textContent = data.temperature + ' °C';
-                        if (document.getElementById('current-temp-display')) {
-                            document.getElementById('current-temp-display').textContent = data.temperature;
-                        }
-                    }
-                    if (data.externalTemperature !== undefined) {
-                        document.getElementById('externalTemperature').textContent = data.externalTemperature + ' °C';
                     }
                 } catch (e) {
                     console.error('WebSocket message parsing error:', e);
@@ -1720,15 +1471,6 @@ const char mainPage[] PROGMEM = R"html(
                         if (relay <= 3) {
                             updateButtonStyle(relay);
                         }
-                    }
-                    if (data.temperature !== undefined) {
-                        document.getElementById('temperature').textContent = data.temperature + ' °C';
-                        if (document.getElementById('current-temp-display')) {
-                            document.getElementById('current-temp-display').textContent = data.temperature;
-                        }
-                    }
-                    if (data.externalTemperature !== undefined) {
-                        document.getElementById('externalTemperature').textContent = data.externalTemperature + ' °C';
                     }
                 })
                 .catch(error => {
@@ -2054,1085 +1796,6 @@ const char logsPage[] PROGMEM = R"html(
 
         loadLogs();
         setInterval(loadLogs, 10000);
-    </script>
-</body>
-</html>
-)html";
-
-const char tempctrl[] PROGMEM = R"html(
-<!DOCTYPE html>
-<html>
-<head>
-    <link rel="icon" type="image/png" href="/favicon.png">
-    <link rel="shortcut icon" type="image/png" href="/favicon.png">
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Temperature Control</title>
-    <style>
-        :root {
-            --primary-color: #1976D2;
-            --primary-dark: #0D47A1;
-            --primary-light: #BBDEFB;
-            --accent-color: #03A9F4;
-            --success-color: #4CAF50;
-            --warning-color: #FFC107;
-            --error-color: #F44336;
-            --text-color: #333;
-            --text-light: #757575;
-            --background-color: #f5f7fa;
-            --card-color: #ffffff;
-            --border-radius: 8px;
-            --shadow: 0 2px 10px rgba(0,0,0,0.1);
-            --transition: all 0.3s ease;
-        }
-
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-        }
-
-        body {
-            margin: 0;
-            padding: 0;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: var(--background-color);
-            color: var(--text-color);
-            line-height: 1.6;
-        }
-
-        header {
-            background: linear-gradient(135deg, var(--primary-color), var(--primary-dark));
-            color: white;
-            padding: 20px;
-            text-align: center;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            position: relative;
-            z-index: 10;
-            margin-bottom: 30px;
-        }
-
-        header h1 {
-            margin: 0;
-            font-size: 2rem;
-            letter-spacing: 0.5px;
-        }
-
-        .container {
-            padding: 20px;
-            max-width: 1200px;
-            margin: auto;
-        }
-
-        .button {
-            display: inline-block;
-            padding: 12px 24px;
-            background-color: var(--primary-color);
-            color: white;
-            text-decoration: none;
-            border-radius: var(--border-radius);
-            margin: 5px 0 20px 0;
-            transition: var(--transition);
-            border: none;
-            cursor: pointer;
-            font-size: 1rem;
-            font-weight: 500;
-            box-shadow: var(--shadow);
-            text-align: center;
-        }
-
-        .button:hover {
-            background-color: var(--primary-dark);
-            transform: translateY(-2px);
-            box-shadow: 0 4px 10px rgba(0,0,0,0.15);
-        }
-
-        .button:active {
-            transform: translateY(1px);
-        }
-
-        .header-actions {
-            margin-bottom: 20px;
-            overflow: hidden;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 10px;
-        }
-
-        .temp-control {
-            background-color: var(--card-color);
-            padding: 25px;
-            border-radius: var(--border-radius);
-            box-shadow: var(--shadow);
-            margin-bottom: 25px;
-            transition: var(--transition);
-        }
-        
-        .temp-control:hover {
-            box-shadow: 0 5px 15px rgba(0,0,0,0.15);
-        }
-        
-        .temp-control h3 {
-            color: var(--primary-color);
-            margin-bottom: 15px;
-            font-size: 1.5rem;
-            border-bottom: 2px solid var(--primary-light);
-            padding-bottom: 10px;
-        }
-        
-        .temp-control .slider-container {
-            margin: 25px 0;
-        }
-        
-        .temp-control .slider-container label {
-            display: block;
-            margin-bottom: 8px;
-            font-weight: 500;
-        }
-        
-        .temp-control .range-values {
-            display: flex;
-            justify-content: space-between;
-            margin-top: 10px;
-            color: var(--text-light);
-        }
-        
-        .temp-control .current-value {
-            text-align: center;
-            font-size: 1.2rem;
-            font-weight: bold;
-            color: var(--primary-color);
-            margin: 10px 0;
-        }
-        
-        .temp-control input[type="range"] {
-            width: 100%;
-            height: 8px;
-            border-radius: 5px;
-            background: #ddd;
-            outline: none;
-            -webkit-appearance: none;
-        }
-        
-        .temp-control input[type="range"]::-webkit-slider-thumb {
-            -webkit-appearance: none;
-            appearance: none;
-            width: 20px;
-            height: 20px;
-            border-radius: 50%;
-            background: var(--primary-color);
-            cursor: pointer;
-            transition: var(--transition);
-        }
-        
-        .temp-control input[type="range"]::-webkit-slider-thumb:hover {
-            background: var(--primary-dark);
-            transform: scale(1.1);
-        }
-
-        .temp-control input[type="number"] {
-            width: 100%;
-            padding: 12px;
-            margin: 8px 0 20px 0;
-            border-radius: var(--border-radius);
-            border: 1px solid #ddd;
-            font-size: 1rem;
-            transition: var(--transition);
-        }
-
-        .temp-control input[type="number"]:focus {
-            outline: none;
-            border-color: var(--primary-color);
-            box-shadow: 0 0 0 3px var(--primary-light);
-        }
-        
-        .temp-control .toggle-container {
-            display: flex;
-            align-items: center;
-            margin: 20px 0;
-        }
-        
-        .temp-control .toggle-switch {
-            position: relative;
-            display: inline-block;
-            width: 60px;
-            height: 34px;
-            margin-right: 15px;
-        }
-        
-        .temp-control .toggle-switch input {
-            opacity: 0;
-            width: 0;
-            height: 0;
-        }
-        
-        .temp-control .slider {
-            position: absolute;
-            cursor: pointer;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background-color: #ccc;
-            transition: .4s;
-            border-radius: 34px;
-        }
-        
-        .temp-control .slider:before {
-            position: absolute;
-            content: "";
-            height: 26px;
-            width: 26px;
-            left: 4px;
-            bottom: 4px;
-            background-color: white;
-            transition: .4s;
-            border-radius: 50%;
-        }
-        
-        .temp-control input:checked + .slider {
-            background-color: var(--success-color);
-        }
-        
-        .temp-control input:focus + .slider {
-            box-shadow: 0 0 1px var(--success-color);
-        }
-        
-        .temp-control input:checked + .slider:before {
-            transform: translateX(26px);
-        }
-        
-        .temp-control .toggle-label {
-            font-size: 1rem;
-            font-weight: 500;
-        }
-        
-        .temp-control .temp-buttons {
-            display: flex;
-            justify-content: flex-end;
-            gap: 10px;
-        }
-        
-        .temp-control .save-button {
-            padding: 12px 24px;
-            background-color: var(--primary-color);
-            color: white;
-            border: none;
-            border-radius: var(--border-radius);
-            cursor: pointer;
-            transition: var(--transition);
-            font-weight: 500;
-            font-size: 1rem;
-            box-shadow: var(--shadow);
-        }
-        
-        .temp-control .save-button:hover {
-            background-color: var(--primary-dark);
-            transform: translateY(-2px);
-            box-shadow: 0 4px 10px rgba(0,0,0,0.15);
-        }
-
-        .temp-control .save-button:active {
-            transform: translateY(1px);
-        }
-        
-        .temp-control .temp-values-display {
-            display: flex;
-            justify-content: space-between;
-            margin: 20px 0;
-            font-size: 1.1rem;
-            gap: 10px;
-        }
-        
-        .temp-control .temp-value-box {
-            text-align: center;
-            padding: 15px;
-            background-color: #f5f7fa;
-            border-radius: var(--border-radius);
-            flex: 1;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.05);
-            min-width: 0;
-        }
-        
-        .temp-control .temp-value-box span {
-            font-weight: bold;
-            color: var(--primary-color);
-            font-size: 1.2rem;
-        }
-        
-        .temp-control .temp-value-box.min-temp {
-            border-left: 4px solid var(--warning-color);
-        }
-        
-        .temp-control .temp-value-box.max-temp {
-            border-left: 4px solid var(--error-color);
-        }
-        
-        .temp-control .temp-value-box.current-temp {
-            border-left: 4px solid var(--success-color);
-        }
-
-        .temp-control .heater-status {
-            margin: 20px 0;
-            padding: 15px;
-            background-color: #f5f7fa;
-            border-radius: var(--border-radius);
-            border-left: 4px solid var(--primary-color);
-        }
-
-        .temp-control .status-indicator {
-            display: flex;
-            align-items: center;
-        }
-
-        .temp-control .status-dot {
-            display: inline-block;
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            margin-right: 10px;
-            background-color: #ccc;
-        }
-
-        .temp-control .status-dot.on {
-            background-color: var(--success-color);
-            box-shadow: 0 0 5px var(--success-color);
-        }
-
-        .temp-control .status-dot.off {
-            background-color: var(--error-color);
-            box-shadow: 0 0 5px var(--error-color);
-        }
-
-        .temp-control .status-text {
-            font-size: 1.1rem;
-            font-weight: 500;
-        }
-
-        .calibration-section {
-            background-color: var(--card-color);
-            padding: 25px;
-            border-radius: var(--border-radius);
-            box-shadow: var(--shadow);
-            margin-bottom: 25px;
-            transition: var(--transition);
-        }
-
-        .calibration-section:hover {
-            box-shadow: 0 5px 15px rgba(0,0,0,0.15);
-        }
-
-        .calibration-section h3 {
-            color: var(--primary-color);
-            margin-bottom: 15px;
-            font-size: 1.5rem;
-            border-bottom: 2px solid var(--primary-light);
-            padding-bottom: 10px;
-        }
-
-        .calibration-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-            margin-bottom: 20px;
-        }
-
-        .calibration-item label {
-            display: block;
-            margin-bottom: 8px;
-            font-weight: 500;
-            color: var(--text-color);
-        }
-
-        .calibration-item input[type="number"] {
-            width: 100%;
-            padding: 12px;
-            margin: 8px 0 20px 0;
-            border-radius: var(--border-radius);
-            border: 1px solid #ddd;
-            font-size: 1rem;
-            transition: var(--transition);
-        }
-
-        .calibration-item input[type="number"]:focus {
-            outline: none;
-            border-color: var(--primary-color);
-            box-shadow: 0 0 0 3px var(--primary-light);
-        }
-
-        .calibration-note {
-            background-color: #e3f2fd;
-            border-left: 4px solid var(--primary-color);
-            padding: 12px;
-            margin-bottom: 20px;
-            border-radius: 4px;
-            font-size: 0.9rem;
-            color: #1565c0;
-        }
-
-        .raw-data-section {
-            background-color: var(--card-color);
-            padding: 25px;
-            border-radius: var(--border-radius);
-            box-shadow: var(--shadow);
-            margin-bottom: 25px;
-            transition: var(--transition);
-        }
-
-        .raw-data-section:hover {
-            box-shadow: 0 5px 15px rgba(0,0,0,0.15);
-        }
-
-        .raw-data-section h3 {
-            color: var(--primary-color);
-            margin-bottom: 15px;
-            font-size: 1.5rem;
-            border-bottom: 2px solid var(--primary-light);
-            padding-bottom: 10px;
-        }
-
-        .raw-data-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-            margin-bottom: 20px;
-        }
-
-        .raw-data-item {
-            text-align: center;
-            padding: 15px;
-            background-color: #f8f9fa;
-            border-radius: var(--border-radius);
-            transition: var(--transition);
-        }
-
-        .raw-data-item:hover {
-            background-color: #e9ecef;
-        }
-
-        .raw-data-label {
-            font-size: 1rem;
-            color: var(--text-light);
-            margin-bottom: 8px;
-            font-weight: 500;
-        }
-
-        .raw-data-value {
-            font-size: 1.8rem;
-            font-weight: bold;
-            color: var(--accent-color);
-        }
-
-        .raw-data-item.internal {
-            border-left: 4px solid var(--success-color);
-        }
-
-        .raw-data-item.external {
-            border-left: 4px solid var(--accent-color);
-        }
-
-        .calibration-save-button {
-            width: 100%;
-            padding: 12px 24px;
-            background-color: var(--accent-color);
-            color: white;
-            border: none;
-            border-radius: var(--border-radius);
-            cursor: pointer;
-            transition: var(--transition);
-            font-weight: 500;
-            font-size: 1rem;
-            box-shadow: var(--shadow);
-        }
-
-        .calibration-save-button:hover {
-            background-color: #0288D1;
-            transform: translateY(-2px);
-            box-shadow: 0 4px 10px rgba(0,0,0,0.15);
-        }
-
-        .calibration-save-button:active {
-            transform: translateY(1px);
-        }
-
-        #temperature {
-            font-size: 2rem;
-            margin: 20px 0;
-            text-align: center;
-            padding: 20px;
-            background-color: var(--card-color);
-            border-radius: var(--border-radius);
-            box-shadow: var(--shadow);
-            color: var(--primary-color);
-            transition: var(--transition);
-        }
-
-        .changed-indicator {
-            background-color: #fff3cd !important;
-            border-left: 4px solid var(--warning-color) !important;
-        }
-
-        .save-button.changes-pending {
-            background-color: var(--warning-color) !important;
-            color: #333 !important;
-            animation: pulse 2s infinite;
-        }
-
-        .calibration-save-button.changes-pending {
-            background-color: var(--warning-color) !important;
-            color: #333 !important;
-            animation: pulse 2s infinite;
-        }
-
-        @keyframes pulse {
-            0% { transform: scale(1); }
-            50% { transform: scale(1.05); }
-            100% { transform: scale(1); }
-        }
-
-        @media (max-width: 768px) {
-            .container {
-                padding: 10px;
-            }
-            
-            .header-actions {
-                flex-direction: column;
-                align-items: stretch;
-            }
-            
-            .button {
-                width: 100%;
-                margin: 5px 0;
-                text-align: center;
-            }
-            
-            .temp-control {
-                padding: 15px;
-            }
-            
-            .temp-control .temp-values-display {
-                flex-direction: column;
-                gap: 10px;
-                margin: 15px 0;
-            }
-            
-            .temp-control .temp-value-box {
-                padding: 12px;
-                font-size: 1rem;
-            }
-            
-            .temp-control .temp-value-box span {
-                font-size: 1.1rem;
-            }
-            
-            .temp-control h3 {
-                font-size: 1.3rem;
-            }
-            
-            .temp-control .toggle-container {
-                flex-wrap: wrap;
-                gap: 10px;
-            }
-            
-            .temp-control .toggle-switch {
-                margin-right: 0;
-            }
-            
-            .temp-control .save-button {
-                width: 100%;
-                padding: 12px;
-            }
-
-            .temp-control .temp-buttons {
-                flex-direction: column;
-                gap: 10px;
-            }
-
-            .calibration-grid {
-                grid-template-columns: 1fr;
-                gap: 15px;
-            }
-
-            .raw-data-grid {
-                grid-template-columns: 1fr;
-                gap: 15px;
-            }
-
-            .calibration-section {
-                padding: 15px;
-            }
-
-            .raw-data-section {
-                padding: 15px;
-            }
-
-            .calibration-section h3 {
-                font-size: 1.3rem;
-            }
-
-            .raw-data-section h3 {
-                font-size: 1.3rem;
-            }
-
-            .raw-data-value {
-                font-size: 1.5rem;
-            }
-            
-            #temperature {
-                font-size: 1.5rem;
-                padding: 15px;
-            }
-
-            .calibration-save-button {
-                padding: 12px;
-            }
-        }
-    </style>
-</head>
-<body>
-    <header>
-        <h1>Temperature Control</h1>
-    </header>
-    <div class="container">
-        <div class="header-actions">
-            <button onclick="goBack()" class="button">Back to Dashboard</button>
-        </div>
-        <div class="temp-control">
-            <h3>Heater Control</h3>
-
-            <div class="heater-status">
-                <div class="status-indicator">
-                    <span class="status-dot" id="heater-status-dot"></span>
-                    <span class="status-text">Heater Status: <span id="heater-status">Unknown</span></span>
-                </div>
-            </div>
-            <div class="temp-values-display">
-                <div class="temp-value-box current-temp">
-                    <div>Current Temperature</div>
-                    <span id="current-temp-display">--</span> °C
-                </div>
-                <div class="temp-value-box min-temp">
-                    <div>Min Temperature</div>
-                    <span id="min-temp-display">--</span> °C
-                </div>
-                <div class="temp-value-box max-temp">
-                    <div>Max Temperature</div>
-                    <span id="max-temp-display">--</span> °C
-                </div>
-            </div>
-            
-            <div class="slider-container">
-                <label for="min-temp-slider">Minimum Temperature (°C):</label>
-                <input type="range" id="min-temp-slider" min="20" max="30" step="1" value="24">
-                <div class="current-value">
-                    <span id="min-temp-value">24</span> °C
-                </div>
-                <div class="range-values">
-                    <span>20°C</span>
-                    <span>30°C</span>
-                </div>
-            </div>
-            
-            <div class="slider-container">
-                <label for="max-temp-slider">Maximum Temperature (°C):</label>
-                <input type="range" id="max-temp-slider" min="20" max="30" step="1" value="28">
-                <div class="current-value">
-                    <span id="max-temp-value">28</span> °C
-                </div>
-                <div class="range-values">
-                    <span>20°C</span>
-                    <span>30°C</span>
-                </div>
-            </div>
-            
-            <div class="toggle-container">
-                <label class="toggle-switch">
-                    <input type="checkbox" id="temp-control-toggle">
-                    <span class="slider"></span>
-                </label>
-                <div class="toggle-label">Temperature Control: <span id="temp-control-status">Unknown</span></div>
-            </div>
-            
-            <div class="temp-buttons">
-                <button class="save-button" id="save-temp-settings" onclick="saveTemperatureSettings()">Save Settings</button>
-            </div>
-        </div>
-
-        <div class="raw-data-section">
-            <h3>Raw Sensor Data</h3>
-            <div class="raw-data-grid">
-                <div class="raw-data-item internal">
-                    <div class="raw-data-label">Internal Sensor (Raw)</div>
-                    <div class="raw-data-value" id="internal-raw-temp">--</div>
-                </div>
-                <div class="raw-data-item external">
-                    <div class="raw-data-label">External Sensor (Raw)</div>
-                    <div class="raw-data-value" id="external-raw-temp">--</div>
-                </div>
-            </div>
-        </div>
-
-        <div class="calibration-section">
-            <h3>Sensor Calibration</h3>
-            <div class="calibration-note">
-                Calibration allows you to adjust sensor readings to match a reference thermometer. 
-                Positive values increase the reading, negative values decrease it. Range: -10.00°C to +10.00°C
-            </div>
-            
-            <div class="calibration-grid">
-                <div class="calibration-item">
-                    <label for="internal-calibration">Internal Sensor Offset (°C):</label>
-                    <input type="number" id="internal-calibration" min="-10" max="10" step="0.01" value="0.00">
-                </div>
-                <div class="calibration-item">
-                    <label for="external-calibration">External Sensor Offset (°C):</label>
-                    <input type="number" id="external-calibration" min="-10" max="10" step="0.01" value="0.00">
-                </div>
-            </div>
-            
-            <div class="temp-buttons">
-                <button class="calibration-save-button" id="save-calibration-settings" onclick="saveCalibrationSettings()">Save Calibration</button>
-            </div>
-        </div>
-    </div>
-    <script>
-        let socket = new WebSocket('ws://' + window.location.hostname + ':81/');
-        
-        // Track user changes and original values
-        let userChangedSettings = false;
-        let userChangedCalibration = false;
-        let originalSettings = {};
-        let originalCalibration = {};
-        let lastSavedSettings = {};
-        let lastSavedCalibration = {};
-
-        socket.onopen = () => {
-            console.log('WebSocket connected');
-            loadTemperatureSettings();
-            loadCalibrationSettings();
-        };
-        
-        socket.onmessage = (event) => {
-            try {
-                let data = JSON.parse(event.data);
-                
-                if (data.relay4 !== undefined) {
-                    updateHeaterStatus(data.relay4);
-                }
-                if (data.temperature !== undefined) {
-                    document.getElementById('temperature').textContent = 
-                        `Temperature: ${data.temperature} °C`;
-                    document.getElementById('current-temp-display').textContent = data.temperature;
-                }
-                if (data.internalRawTemp !== undefined) {
-                    document.getElementById('internal-raw-temp').textContent = data.internalRawTemp.toFixed(2) + ' °C';
-                }
-                if (data.externalRawTemp !== undefined) {
-                    document.getElementById('external-raw-temp').textContent = data.externalRawTemp.toFixed(2) + ' °C';
-                }
-                if (data.minTemp !== undefined) {
-                    document.getElementById('min-temp-display').textContent = data.minTemp;
-                }
-                if (data.maxTemp !== undefined) {
-                    document.getElementById('max-temp-display').textContent = data.maxTemp;
-                }
-                if (data.tempControlEnabled !== undefined) {
-                    document.getElementById('temp-control-status').textContent = 
-                        data.tempControlEnabled ? 'Enabled' : 'Disabled';
-                }
-            } catch (e) {
-                console.error('WebSocket error:', e);
-            }
-        };
-
-        socket.onclose = () => console.log('WebSocket disconnected');
-        socket.onerror = () => console.log('WebSocket error');
-
-        function goBack() {
-            if (userChangedSettings || userChangedCalibration) {
-                if (!confirm('You have unsaved changes. Are you sure you want to leave?')) {
-                    return;
-                }
-            }
-            window.history.back();
-        }
-
-        function updateTemperatureSliders() {
-            document.getElementById('min-temp-value').textContent = document.getElementById('min-temp-slider').value;
-            document.getElementById('max-temp-value').textContent = document.getElementById('max-temp-slider').value;
-        }
-
-        function checkForSettingsChanges() {
-            const currentMinTemp = parseInt(document.getElementById('min-temp-slider').value);
-            const currentMaxTemp = parseInt(document.getElementById('max-temp-slider').value);
-            const currentEnabled = document.getElementById('temp-control-toggle').checked;
-            
-            const hasChanges = (
-                currentMinTemp !== lastSavedSettings.minTemp ||
-                currentMaxTemp !== lastSavedSettings.maxTemp ||
-                currentEnabled !== lastSavedSettings.enabled
-            );
-            
-            userChangedSettings = hasChanges;
-            updateSettingsUI();
-        }
-
-        function checkForCalibrationChanges() {
-            const currentInternal = parseFloat(document.getElementById('internal-calibration').value);
-            const currentExternal = parseFloat(document.getElementById('external-calibration').value);
-            
-            const hasChanges = (
-                Math.abs(currentInternal - lastSavedCalibration.internalOffset) > 0.001 ||
-                Math.abs(currentExternal - lastSavedCalibration.externalOffset) > 0.001
-            );
-            
-            userChangedCalibration = hasChanges;
-            updateCalibrationUI();
-        }
-
-        function updateSettingsUI() {
-            const saveButton = document.getElementById('save-temp-settings');
-            const tempControl = document.querySelector('.temp-control');
-            
-            if (userChangedSettings) {
-                saveButton.classList.add('changes-pending');
-                saveButton.textContent = 'Save Changes';
-                tempControl.classList.add('changed-indicator');
-            } else {
-                saveButton.classList.remove('changes-pending');
-                saveButton.textContent = 'Save Settings';
-                tempControl.classList.remove('changed-indicator');
-            }
-        }
-
-        function updateCalibrationUI() {
-            const saveButton = document.getElementById('save-calibration-settings');
-            const calibrationSection = document.querySelector('.calibration-section');
-            
-            if (userChangedCalibration) {
-                saveButton.classList.add('changes-pending');
-                saveButton.textContent = 'Save Changes';
-                calibrationSection.classList.add('changed-indicator');
-            } else {
-                saveButton.classList.remove('changes-pending');
-                saveButton.textContent = 'Save Calibration';
-                calibrationSection.classList.remove('changed-indicator');
-            }
-        }
-
-        function loadTemperatureSettings() {
-            fetch('/temperature/settings')
-                .then(response => response.json())
-                .then(data => {
-                    // Only update if user hasn't made changes
-                    if (!userChangedSettings) {
-                        document.getElementById('min-temp-slider').value = data.minTemp;
-                        document.getElementById('max-temp-slider').value = data.maxTemp;
-                        document.getElementById('temp-control-toggle').checked = data.enabled;
-                        
-                        // Update display values
-                        document.getElementById('min-temp-value').textContent = data.minTemp;
-                        document.getElementById('max-temp-value').textContent = data.maxTemp;
-                    }
-                    
-                    // Always update the saved state and display values (these don't affect user inputs)
-                    lastSavedSettings = {
-                        minTemp: data.minTemp,
-                        maxTemp: data.maxTemp,
-                        enabled: data.enabled
-                    };
-                    
-                    document.getElementById('min-temp-display').textContent = data.minTemp;
-                    document.getElementById('max-temp-display').textContent = data.maxTemp;
-                    document.getElementById('current-temp-display').textContent = data.currentTemp;
-                    document.getElementById('temp-control-status').textContent = data.enabled ? 'Enabled' : 'Disabled';
-                    
-                    // Initialize original settings on first load
-                    if (Object.keys(originalSettings).length === 0) {
-                        originalSettings = { ...lastSavedSettings };
-                    }
-                })
-                .catch(error => {
-                    console.error('Error loading temperature settings:', error);
-                });
-        }
-
-        function saveTemperatureSettings() {
-            const minTemp = parseInt(document.getElementById('min-temp-slider').value);
-            const maxTemp = parseInt(document.getElementById('max-temp-slider').value);
-            const enabled = document.getElementById('temp-control-toggle').checked;
-            
-            if (minTemp >= maxTemp) {
-                alert('Minimum temperature must be less than maximum temperature!');
-                return;
-            }
-            
-            const settings = {
-                minTemp: minTemp,
-                maxTemp: maxTemp,
-                enabled: enabled
-            };
-            
-            fetch('/temperature/save', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(settings)
-            })
-            .then(response => {
-                if (!response.ok) {
-                    return response.json().then(data => { throw new Error(data.error); });
-                }
-                return response.json();
-            })
-            .then(data => {
-                alert('Temperature settings saved successfully!');
-                lastSavedSettings = { ...settings };
-                userChangedSettings = false;
-                updateSettingsUI();
-                loadTemperatureSettings();
-            })
-            .catch(error => {
-                alert('Failed to save settings: ' + error.message);
-            });
-        }
-
-        function loadCalibrationSettings() {
-            fetch('/calibration/settings')
-                .then(response => response.json())
-                .then(data => {
-                    // Only update if user hasn't made changes
-                    if (!userChangedCalibration) {
-                        document.getElementById('internal-calibration').value = data.internalOffset.toFixed(2);
-                        document.getElementById('external-calibration').value = data.externalOffset.toFixed(2);
-                    }
-                    
-                    // Always update the saved state
-                    lastSavedCalibration = {
-                        internalOffset: data.internalOffset,
-                        externalOffset: data.externalOffset
-                    };
-                    
-                    // Initialize original calibration on first load
-                    if (Object.keys(originalCalibration).length === 0) {
-                        originalCalibration = { ...lastSavedCalibration };
-                    }
-                })
-                .catch(error => {
-                    console.error('Error loading calibration settings:', error);
-                });
-        }
-
-        function saveCalibrationSettings() {
-            const internalOffset = parseFloat(document.getElementById('internal-calibration').value);
-            const externalOffset = parseFloat(document.getElementById('external-calibration').value);
-            
-            if (internalOffset < -10 || internalOffset > 10 || externalOffset < -10 || externalOffset > 10) {
-                alert('Calibration offsets must be between -10°C and +10°C!');
-                return;
-            }
-            
-            const settings = {
-                internalOffset: internalOffset,
-                externalOffset: externalOffset
-            };
-            
-            fetch('/calibration/save', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(settings)
-            })
-            .then(response => {
-                if (!response.ok) {
-                    return response.json().then(data => { throw new Error(data.error); });
-                }
-                return response.json();
-            })
-            .then(data => {
-                alert('Calibration settings saved successfully!');
-                // Update saved state and reset change tracking
-                lastSavedCalibration = { ...settings };
-                userChangedCalibration = false;
-                updateCalibrationUI();
-                loadCalibrationSettings();
-            })
-            .catch(error => {
-                alert('Failed to save calibration: ' + error.message);
-            });
-        }
-
-        function updateHeaterStatus(isOn) {
-            const statusDot = document.getElementById('heater-status-dot');
-            const statusText = document.getElementById('heater-status');
-            
-            if (statusDot && statusText) {
-                statusDot.className = 'status-dot ' + (isOn ? 'on' : 'off');
-                statusText.textContent = isOn ? 'ON' : 'OFF';
-            }
-        }
-
-        function getInitialHeaterStatus() {
-            fetch('/relay/status')
-                .then(response => response.json())
-                .then(data => {
-                    if (data["4"] !== undefined) {
-                        updateHeaterStatus(data["4"]);
-                    }
-                })
-                .catch(error => {
-                    console.error('Error getting initial heater status:', error);
-                });
-        }
-
-        function loadRawSensorData() {
-            fetch('/temperature/raw')
-                .then(response => response.json())
-                .then(data => {
-                    if (data.internalRaw !== undefined) {
-                        document.getElementById('internal-raw-temp').textContent = data.internalRaw.toFixed(2) + ' °C';
-                    }
-                    if (data.externalRaw !== undefined) {
-                        document.getElementById('external-raw-temp').textContent = data.externalRaw.toFixed(2) + ' °C';
-                    }
-                })
-                .catch(error => {
-                    console.error('Error loading raw sensor data:', error);
-                });
-        }
-        
-        document.getElementById('min-temp-slider').addEventListener('input', () => {
-            updateTemperatureSliders();
-            checkForSettingsChanges();
-        });
-        
-        document.getElementById('max-temp-slider').addEventListener('input', () => {
-            updateTemperatureSliders();
-            checkForSettingsChanges();
-        });
-        
-        document.getElementById('temp-control-toggle').addEventListener('change', checkForSettingsChanges);
-        
-        document.getElementById('internal-calibration').addEventListener('input', checkForCalibrationChanges);
-        document.getElementById('external-calibration').addEventListener('input', checkForCalibrationChanges);
-
-        // Initialize everything
-        loadTemperatureSettings();
-        loadCalibrationSettings();
-        getInitialHeaterStatus();
-        loadRawSensorData();
-        
-        setInterval(() => {
-            if (!userChangedSettings) {
-                loadTemperatureSettings();
-            }
-            if (!userChangedCalibration) {
-                loadCalibrationSettings();
-            }
-            loadRawSensorData();
-        }, 10000);
-        
-        setInterval(getInitialHeaterStatus, 5000);
     </script>
 </body>
 </html>
@@ -4659,14 +3322,9 @@ void loop() {
   vTaskDelete(NULL);
 }
 
-void emailLoop(void* parameter) {
-  unsigned long lastEmailAttempt = 0;
-  const unsigned long EMAIL_RETRY_INTERVAL = 30000;
+void secondaryLoop(void* parameter) {
   
   for (;;) {
-    handleTemperature();
-    handleExternalTemperature();
-
     if (WiFi.status() != WL_CONNECTED) {
       unsigned long currentMillis = millis();
       if (currentMillis - lastWifiConnectAttempt > WIFI_RECONNECT_INTERVAL) {
@@ -4716,7 +3374,6 @@ void mainLoop(void* parameter) {
     checkoverride1();
     checkoverride2();
     overrideLEDState();
-    checkTemperatureControl();
 
     if (!validTimeSync && WiFi.status() == WL_CONNECTED) {
       unsigned long currentMillis = millis();
@@ -4942,24 +3599,9 @@ void deactivateRelay(int relayNum, bool manual) {
 }
 
 void broadcastRelayStates() {
-  sensors.requestTemperatures();
-  externalSensors.requestTemperatures();
-  
-  float internalRaw = sensors.getTempC(sensorAddress);
-  float externalRaw = externalSensors.getTempC(externalSensorAddress);
-  
-  if (internalRaw == DEVICE_DISCONNECTED_C) {
-    internalRaw = lastValidTemperature - sensorCalibration.internalOffset;
-  }
-  if (externalRaw == DEVICE_DISCONNECTED_C) {
-    externalRaw = lastValidExternalTemperature - sensorCalibration.externalOffset;
-  }
 
-  String message = "{\"relay1\":" + String(relay1State || overrideRelay1) + ",\"relay2\":" + String(relay2State || overrideRelay2) + ",\"relay3\":" + String(relay3State || overrideRelay1) + ",\"relay4\":" + String(relay4State) + ",\"temperature\":" + String(lastValidTemperature, 1) + ",\"externalTemperature\":" + String(lastValidExternalTemperature, 1) + ",\"internalRawTemp\":" + String(internalRaw, 2) + ",\"externalRawTemp\":" + String(externalRaw, 2);
+  String message = "{\"relay1\":" + String(relay1State || overrideRelay1) + ",\"relay2\":" + String(relay2State || overrideRelay2) + ",\"relay3\":" + String(relay3State || overrideRelay1) + ",\"relay4\":";
 
-  if (!temperatureData.empty()) {
-    message += ",\"tempControlEnabled\":" + String(temperatureData[0].enabled ? "true" : "false") + ",\"minTemp\":" + String(temperatureData[0].minTemp) + ",\"maxTemp\":" + String(temperatureData[0].maxTemp);
-  }
 
   message += ",\"relay1Name\":\"WaveMaker\"";
   message += ",\"relay2Name\":\"Light\"";
@@ -5233,8 +3875,6 @@ void handleRelayStatus() {
   json += "\"2\":" + String(relay2State || overrideRelay2) + ",";
   json += "\"3\":" + String(relay3State || overrideRelay1) + ",";
   json += "\"4\":" + String(relay4State) + ",";
-  json += "\"temperature\":" + String(lastValidTemperature, 1) + ",";
-  json += "\"externalTemperature\":" + String(lastValidExternalTemperature, 1) + "}";
   server.send(200, "application/json", json);
 }
 
@@ -5339,130 +3979,6 @@ void overrideLEDState() {
   } else {
     digitalWrite(errorLEDPin, LOW);
     blinkState = false;
-  }
-}
-
-void handleTemperature() {
-  if (millis() - lastTemp >= 20000) {
-    sensors.requestTemperatures();
-    float tempC = sensors.getTempC(sensorAddress);
-
-    if (tempC != DEVICE_DISCONNECTED_C) {
-      lastValidTemperature = tempC + sensorCalibration.internalOffset;
-      broadcastRelayStates();
-      consecutiveTempFailures = 0;
-      if (hasTempError) {
-        clearError();
-        hasTempError = false;
-        tempErrorLogged = false;
-      }
-    } else {
-      consecutiveTempFailures++;
-      if (consecutiveTempFailures >= MAX_TEMP_FAILURES) {
-        if (!temperatureData.empty() && temperatureData[0].enabled) {
-          if (!tempErrorLogged) {
-            storeLogEntry("Error: Temperature sensor failed " + String(consecutiveTempFailures) + " times");
-            tempErrorLogged = true;
-          }
-          indicateError();
-          hasTempError = true;
-        } else {
-          if (!tempErrorLogged) {
-            storeLogEntry("Warning: Temperature sensor failed " + String(consecutiveTempFailures) + " times (heater control disabled)");
-            tempErrorLogged = true;
-          }
-        }
-      }
-    }
-
-    lastTemp = millis();
-  }
-}
-
-void handleGetTemperatureSettings() {
-  String json = "{";
-  json += "\"minTemp\":" + String(temperatureData[0].minTemp) + ",";
-  json += "\"maxTemp\":" + String(temperatureData[0].maxTemp) + ",";
-  json += "\"enabled\":" + String(temperatureData[0].enabled ? "true" : "false") + ",";
-  json += "\"currentTemp\":" + String(lastValidTemperature, 1);
-  json += "}";
-  server.send(200, "application/json", json);
-}
-
-void handleSaveTemperatureSettings() {
-  if (server.hasArg("plain")) {
-    String body = server.arg("plain");
-    StaticJsonDocument<200> doc;
-    DeserializationError error = deserializeJson(doc, body);
-
-    if (!error) {
-      int minTemp = doc["minTemp"];
-      int maxTemp = doc["maxTemp"];
-      bool enabled = doc["enabled"];
-
-      if (minTemp < maxTemp) {
-        if (temperatureData.empty()) {
-          TemperatureData data;
-          temperatureData.push_back(data);
-        }
-
-        temperatureData[0].minTemp = minTemp;
-        temperatureData[0].maxTemp = maxTemp;
-        temperatureData[0].enabled = enabled;
-
-        saveTemperatureSettings();
-
-        server.send(200, "application/json", "{\"status\":\"success\"}");
-        storeLogEntry("Temperature control settings updated: Min=" + String(minTemp) + "°C, Max=" + String(maxTemp) + "°C, Enabled=" + String(enabled ? "Yes" : "No"));
-        return;
-      } else {
-        server.send(400, "application/json", "{\"error\":\"Minimum temperature must be less than maximum temperature\"}");
-        return;
-      }
-    }
-  }
-  server.send(400, "application/json", "{\"error\":\"Invalid request\"}");
-}
-
-void checkTemperatureControl() {
-  if (temperatureData.empty()) {
-    return;
-  }
-
-  if (!temperatureData[0].enabled) {
-    if (!relay4State) {
-      digitalWrite(relay4, LOW);
-      relay4State = true;
-      storeLogEntry("Heater turned ON - Heater Control Disabled");
-      broadcastRelayStates();
-    }
-    return;
-  }
-
-  if (hasTempError) {
-    if (!relay4State) {
-      digitalWrite(relay4, LOW);
-      relay4State = true;
-      storeLogEntry("Heater turned ON - Temperature sensor failure failsafe activated");
-      broadcastRelayStates();
-    }
-    return;
-  }
-
-  if (lastValidTemperature > temperatureData[0].maxTemp) {
-    if (relay4State) {
-      digitalWrite(relay4, HIGH);
-      relay4State = false;
-      storeLogEntry("Heater turned OFF - Temperature " + String(lastValidTemperature, 1) + "°C above maximum " + String(temperatureData[0].maxTemp) + "°C");
-      broadcastRelayStates();
-    }
-  } else if (lastValidTemperature < temperatureData[0].minTemp) {
-    if (!relay4State) {
-      digitalWrite(relay4, LOW);
-      relay4State = true;
-      storeLogEntry("Heater turned ON - Temperature " + String(lastValidTemperature, 1) + "°C below minimum " + String(temperatureData[0].minTemp) + "°C");
-      broadcastRelayStates();
-    }
   }
 }
 
@@ -5673,73 +4189,4 @@ void checkTemporarySchedules() {
       ++it;
     }
   }
-}
-
-void handleExternalTemperature() {
-  if (millis() - lastExternalTemp >= 60000) {
-    externalSensors.requestTemperatures();
-    float tempC = externalSensors.getTempC(externalSensorAddress);
-
-    if (tempC != DEVICE_DISCONNECTED_C) {
-      lastValidExternalTemperature = tempC + sensorCalibration.externalOffset;
-      broadcastRelayStates();
-      consecutiveExternalTempFailures = 0;
-      if (hasExternalTempError) {
-        storeLogEntry("External temperature sensor restored");
-        hasExternalTempError = false;
-        externalTempErrorLogged = false;
-        clearError();
-      }
-    } else {
-      consecutiveExternalTempFailures++;
-      if (consecutiveExternalTempFailures >= MAX_EXTERNAL_TEMP_FAILURES) {
-        if (!externalTempErrorLogged) {
-          storeLogEntry("Error: External temperature sensor failed " + String(consecutiveExternalTempFailures) + " times");
-          indicateError();
-          externalTempErrorLogged = true;
-        }
-        hasExternalTempError = true;
-      }
-    }
-
-    lastExternalTemp = millis();
-  }
-}
-
-void tempTemperature() {
-    sensors.requestTemperatures();
-    float tempC = sensors.getTempC(sensorAddress);
-
-    if (tempC != DEVICE_DISCONNECTED_C) {
-        lastValidTemperature = tempC + sensorCalibration.internalOffset;
-    }
-
-    externalSensors.requestTemperatures();
-    float externalTempC = externalSensors.getTempC(externalSensorAddress);
-
-    if (externalTempC != DEVICE_DISCONNECTED_C) {
-        lastValidExternalTemperature = externalTempC + sensorCalibration.externalOffset;
-    }
-}
-
-void handleGetRawTemperatureData() {
-  sensors.requestTemperatures();
-  externalSensors.requestTemperatures();
-  
-  float internalRaw = sensors.getTempC(sensorAddress);
-  float externalRaw = externalSensors.getTempC(externalSensorAddress);
-  
-  if (internalRaw == DEVICE_DISCONNECTED_C) {
-    internalRaw = lastValidTemperature - sensorCalibration.internalOffset;
-  }
-  if (externalRaw == DEVICE_DISCONNECTED_C) {
-    externalRaw = lastValidExternalTemperature - sensorCalibration.externalOffset;
-  }
-  
-  String json = "{";
-  json += "\"internalRaw\":" + String(internalRaw, 2) + ",";
-  json += "\"externalRaw\":" + String(externalRaw, 2);
-  json += "}";
-  
-  server.send(200, "application/json", json);
 }
