@@ -2282,8 +2282,6 @@ void checkWatchdog() {
   }
 }
 
-bool validDateSync = false;
-
 TaskHandle_t networkTask;
 TaskHandle_t controlTask;
 
@@ -2296,7 +2294,6 @@ void attemptTimeSync() {
       storeLogEntry("Time and Date sync successful");
     }
     validTimeSync = true;
-    validDateSync = true;
     lastNTPSync = millis();
     clearError();
     timeSyncErrorLogged = false;
