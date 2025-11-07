@@ -108,6 +108,8 @@ bool wifiConnectionErrorLogged = false;
 
 const char* ssid = "Your_WiFi_SSID";
 const char* password = "Your_WiFi_Password";
+const char* authUsername = "admin";
+const char* authPassword = "12345678";
 std::vector<LogEntry> logBuffer;
 bool spiffsInitialized = false;
 WiFiUDP ntpUDP;
@@ -115,11 +117,10 @@ Ticker watchdogTicker;
 Ticker ledBlinkTicker;
 unsigned long lastLoopTime = 0;
 const unsigned long watchdogTimeout = 10000;
-unsigned long lastTimeUpdate = 0;
-const long timeUpdateInterval = 1000;
+
+
 unsigned long lastNTPSync = 0;
 unsigned long lastScheduleCheck = 0;
-unsigned long lastSecond = 0;
 bool validTimeSync = false;
 unsigned long lastMinCheck = 0;
 const unsigned long CHECK_MIN_INTERVAL = 1800;
@@ -141,8 +142,6 @@ const int TEMP_SCHEDULE_START_ADDR = SCHEDULE_START_ADDR + 1 + (MAX_SCHEDULES * 
 const int TEMP_SCHEDULE_ID_COUNTER_ADDR = TEMP_SCHEDULE_START_ADDR + 1 + (MAX_TEMP_SCHEDULES * TEMP_SCHEDULE_SIZE);
 const int LAST_CHECK_TIME_ADDR = TEMP_SCHEDULE_ID_COUNTER_ADDR + sizeof(int);
 
-const int TOGGLE_DELAY = 500;
-const int TOGGLE_COUNT = 3;
 const std::vector<String> allowedIPs = {
   "192.168.29.3",  //A Mac
   "192.168.29.4",  //A Ipad
@@ -158,8 +157,6 @@ bool lastButton1State = HIGH;
 bool lastButton2State = HIGH;
 bool lastButton3State = HIGH;
 bool lastButton4State = HIGH;
-const char* authUsername = "admin";
-const char* authPassword = "12345678";
 
 WiFiEventId_t wifiConnectHandler;
 
