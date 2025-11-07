@@ -118,7 +118,6 @@ unsigned long lastNTPSync = 0;
 unsigned long lastScheduleCheck = 0;
 unsigned long lastSecond = 0;
 bool validTimeSync = false;
-bool checktempSchedulesOnStartupDone = false;
 unsigned long lastMinCheck = 0;
 const unsigned long CHECK_MIN_INTERVAL = 1800;
 bool hasError = false;
@@ -5026,13 +5025,9 @@ void mainLoop(void* parameter) {
 
     if (!hasLaunchedSchedules && validTimeSync) {
       checkScheduleslaunch();
+      checkExpiredTemporarySchedulesOnStartup();
       storeLogEntry("Startup Schedule Check Success");
       hasLaunchedSchedules = true;
-
-      if (!checktempSchedulesOnStartupDone){
-          checktempSchedulesOnStartupDone = true;
-          checkExpiredTemporarySchedulesOnStartup();
-        }
       }
     }
 
