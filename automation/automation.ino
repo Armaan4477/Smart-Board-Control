@@ -48,6 +48,9 @@ void saveTemporarySchedulesToEEPROM();
 void loadTemporarySchedulesFromEEPROM();
 void checkExpiredTemporarySchedulesOnStartup();
 bool hasTemporaryScheduleConflict(int relayNumber, int hours, int minutes);
+void saveLastCheckTimeToEEPROM();
+void loadLastCheckTimeFromEEPROM();
+void extendTemporaryScheduleEndTimes(int missedChecks);
 // void blinkAllLEDs();
 
 struct Schedule {
@@ -136,6 +139,7 @@ const int TEMP_SCHEDULE_SIZE = sizeof(TemporarySchedule);
 const int MAX_TEMP_SCHEDULES = 8;
 const int TEMP_SCHEDULE_START_ADDR = SCHEDULE_START_ADDR + 1 + (MAX_SCHEDULES * SCHEDULE_SIZE);
 const int TEMP_SCHEDULE_ID_COUNTER_ADDR = TEMP_SCHEDULE_START_ADDR + 1 + (MAX_TEMP_SCHEDULES * TEMP_SCHEDULE_SIZE);
+const int LAST_CHECK_TIME_ADDR = TEMP_SCHEDULE_ID_COUNTER_ADDR + sizeof(int);
 
 const int TOGGLE_DELAY = 500;
 const int TOGGLE_COUNT = 3;
@@ -2399,6 +2403,7 @@ void setup() {
   EEPROM.begin(EEPROM_SIZE);
   loadSchedulesFromEEPROM();
   loadTemporarySchedulesFromEEPROM();
+  loadLastCheckTimeFromEEPROM();
 
   webSocket.begin();
   webSocket.onEvent(webSocketEvent);
@@ -2520,6 +2525,52 @@ void loadTemporarySchedulesFromEEPROM() {
   }
 }
 
+void saveLastCheckTimeToEEPROM() {
+  EEPROM.put(LAST_CHECK_TIME_ADDR, lastMinCheck);
+  EEPROM.commit();
+}
+
+void loadLastCheckTimeFromEEPROM() {
+  EEPROM.get(LAST_CHECK_TIME_ADDR, lastMinCheck);
+  
+  if (lastMinCheck < 0 || lastMinCheck >= 86400) {
+    lastMinCheck = 0;
+  }
+}
+
+void extendTemporaryScheduleEndTimes(int missedChecks) {
+  if (missedChecks <= 0 || temporarySchedules.empty()) {
+    return;
+  }
+  
+  int extensionMinutes = (missedChecks * 30);
+  if (extensionMinutes > 90) {
+    extensionMinutes = 90;
+  }
+  
+  bool hasChanges = false;
+  for (TemporarySchedule& schedule : temporarySchedules) {
+    if (schedule.enabled && schedule.hasOffTime) {
+      int totalOffMinutes = schedule.offHour * 60 + schedule.offMinute + extensionMinutes;
+      
+      if (totalOffMinutes >= 1440) {
+        totalOffMinutes = 1439;
+      }
+      
+      schedule.offHour = totalOffMinutes / 60;
+      schedule.offMinute = totalOffMinutes % 60;
+      hasChanges = true;
+      
+      storeLogEntry("Extended temp schedule ID " + String(schedule.id) + 
+                   " end time by " + String(extensionMinutes) + " minutes");
+    }
+  }
+  
+  if (hasChanges) {
+    saveTemporarySchedulesToEEPROM();
+  }
+}
+
 void checkExpiredTemporarySchedulesOnStartup() {
   struct tm timeinfo;
   if (!getLocalTime(&timeinfo)) {
@@ -2529,6 +2580,24 @@ void checkExpiredTemporarySchedulesOnStartup() {
   int hours = timeinfo.tm_hour;
   int minutes = timeinfo.tm_min;
   unsigned long currentTime = hours * 60 + minutes;
+  unsigned long currentSeconds = timeinfo.tm_hour * 3600 + timeinfo.tm_min * 60 + timeinfo.tm_sec;
+
+  if (lastMinCheck > 0) {
+    unsigned long timeSinceLastCheck = 0;
+    
+    if (currentSeconds >= lastMinCheck) {
+      timeSinceLastCheck = currentSeconds - lastMinCheck;
+    } else {
+      timeSinceLastCheck = (86400 - lastMinCheck) + currentSeconds;
+    }
+    
+    int missedChecks = (int)(timeSinceLastCheck / CHECK_MIN_INTERVAL) - 1;
+    
+    if (missedChecks > 0) {
+      storeLogEntry("Detected " + String(missedChecks) + " missed 30-minute checks during downtime");
+      extendTemporaryScheduleEndTimes(missedChecks);
+    }
+  }
 
   for (auto it = temporarySchedules.begin(); it != temporarySchedules.end();) {
     const TemporarySchedule& schedule = *it;
@@ -5009,6 +5078,7 @@ void mainLoop(void* parameter) {
             String timeStr = String(timeinfo.tm_hour) + ":" + (timeinfo.tm_min < 10 ? "0" : "") + String(timeinfo.tm_min);
             storeLogEntry("Device is powered on at " + timeStr);
             lastMinCheck = currentSeconds;
+            saveLastCheckTimeToEEPROM();
           }
 
           static int prevDay = -1;
@@ -5018,6 +5088,7 @@ void mainLoop(void* parameter) {
             storeLogEntry("Day changed to: " + String(timeinfo.tm_mday));
             prevDay = timeinfo.tm_mday;
             lastMinCheck = 0;
+            saveLastCheckTimeToEEPROM();
           }
         }
       }
