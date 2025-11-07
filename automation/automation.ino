@@ -44,8 +44,7 @@ void handleDeleteTemporarySchedule();
 void checkTemporarySchedules();
 void handleTempSchedulesPage();
 void handleSchedulesPage();
-void updateLEDs();
-void blinkAllLEDs();
+// void blinkAllLEDs();
 
 struct Schedule {
   int id;
@@ -88,11 +87,11 @@ const int switch2Pin = 25;
 const int switch3Pin = 33;
 const int switch4Pin = 32;
 
-// LED indicators - Using remaining safe GPIO pins
-const int led1Pin = 18;  // LED for Relay 1
-const int led2Pin = 19;   // LED for Relay 2
-const int led3Pin = 22;   // LED for Relay 3
-const int led4Pin = 23;  // LED for Relay 4
+// // LED indicators - Using safe GPIO pins (avoiding strapping pins)
+// const int led1Pin = 2;   // LED for Relay 1 (built-in LED on some boards)
+// const int led2Pin = 4;   // LED for Relay 2
+// const int led3Pin = 5;   // LED for Relay 3
+// const int led4Pin = 15;  // LED for Relay 4
 
 bool relay1State = false;
 bool relay2State = false;
@@ -2329,14 +2328,14 @@ void setup() {
   pinMode(switch2Pin, INPUT_PULLUP);
   pinMode(switch3Pin, INPUT_PULLUP);
   pinMode(switch4Pin, INPUT_PULLUP);
-  pinMode(led1Pin, OUTPUT);
-  pinMode(led2Pin, OUTPUT);
-  pinMode(led3Pin, OUTPUT);
-  pinMode(led4Pin, OUTPUT);
-  digitalWrite(led1Pin, LOW);
-  digitalWrite(led2Pin, LOW);
-  digitalWrite(led3Pin, LOW);
-  digitalWrite(led4Pin, LOW);
+  // pinMode(led1Pin, OUTPUT);
+  // pinMode(led2Pin, OUTPUT);
+  // pinMode(led3Pin, OUTPUT);
+  // pinMode(led4Pin, OUTPUT);
+  // digitalWrite(led1Pin, LOW);
+  // digitalWrite(led2Pin, LOW);
+  // digitalWrite(led3Pin, LOW);
+  // digitalWrite(led4Pin, LOW);
 
   // Serial.begin(115200);
   // delay(2000);
@@ -2424,7 +2423,7 @@ void setup() {
 void indicateError() {
   if (!triggerederror) {
     storeLogEntry("Error triggered.");
-    ledBlinkTicker.attach(1.0, blinkAllLEDs);
+    // ledBlinkTicker.attach(1.0, blinkAllLEDs);
     triggerederror = true;
   }
   hasError = true;
@@ -2437,23 +2436,23 @@ void clearError() {
   triggerederror = false;
   timeSyncErrorLogged = false;
   tempErrorLogged = false;
-  updateLEDs();
 }
 
-void updateLEDs() {
-  digitalWrite(led1Pin, relay1State ? HIGH : LOW);
-  digitalWrite(led2Pin, relay2State ? HIGH : LOW);
-  digitalWrite(led3Pin, relay3State ? HIGH : LOW);
-  digitalWrite(led4Pin, relay4State ? HIGH : LOW);
-}
-
-void blinkAllLEDs() {
-  ledBlinkState = !ledBlinkState;
-  digitalWrite(led1Pin, ledBlinkState ? HIGH : LOW);
-  digitalWrite(led2Pin, ledBlinkState ? HIGH : LOW);
-  digitalWrite(led3Pin, ledBlinkState ? HIGH : LOW);
-  digitalWrite(led4Pin, ledBlinkState ? HIGH : LOW);
-}
+// void blinkAllLEDs() {
+//   if (hasError) {
+//     ledBlinkState = !ledBlinkState;
+//     // Only blink LEDs for inactive relays
+//     if (!relay1State) digitalWrite(led1Pin, ledBlinkState ? HIGH : LOW);
+//     if (!relay2State) digitalWrite(led2Pin, ledBlinkState ? HIGH : LOW);
+//     if (!relay3State) digitalWrite(led3Pin, ledBlinkState ? HIGH : LOW);
+//     if (!relay4State) digitalWrite(led4Pin, ledBlinkState ? HIGH : LOW);
+//     // Keep active relay LEDs on
+//     if (relay1State) digitalWrite(led1Pin, HIGH);
+//     if (relay2State) digitalWrite(led2Pin, HIGH);
+//     if (relay3State) digitalWrite(led3Pin, HIGH);
+//     if (relay4State) digitalWrite(led4Pin, HIGH);
+//   }
+// }
 
 void saveSchedulesToEEPROM() {
   int addr = SCHEDULE_START_ADDR;
@@ -5029,27 +5028,28 @@ void activateRelay(int relayNum, bool manual) {
   switch (relayNum) {
     case 1:
       digitalWrite(relay1, LOW);
+      // digitalWrite(led1Pin, HIGH);
       relay1State = true;
       storeLogEntry("Relay 1 activated.");
       break;
     case 2:
       digitalWrite(relay2, LOW);
+      // digitalWrite(led2Pin, HIGH);
       relay2State = true;
       storeLogEntry("Relay 2 activated.");
       break;
     case 3:
       digitalWrite(relay3, LOW);
+      // digitalWrite(led3Pin, HIGH);
       relay3State = true;
       storeLogEntry("Relay 3 activated.");
       break;
     case 4:
       digitalWrite(relay4, LOW);
+      // digitalWrite(led4Pin, HIGH);
       relay4State = true;
       storeLogEntry("Relay 4 activated.");
       break;
-  }
-  if (!hasError) {
-    updateLEDs();
   }
   broadcastRelayStates();
 }
@@ -5058,27 +5058,28 @@ void deactivateRelay(int relayNum, bool manual) {
   switch (relayNum) {
     case 1:
       digitalWrite(relay1, HIGH);
+      // digitalWrite(led1Pin, LOW);
       relay1State = false;
       storeLogEntry("Relay 1 deactivated.");
       break;
     case 2:
       digitalWrite(relay2, HIGH);
+      // digitalWrite(led2Pin, LOW);
       relay2State = false;
       storeLogEntry("Relay 2 deactivated.");
       break;
     case 3:
       digitalWrite(relay3, HIGH);
+      // digitalWrite(led3Pin, LOW);
       relay3State = false;
       storeLogEntry("Relay 3 deactivated.");
       break;
     case 4:
       digitalWrite(relay4, HIGH);
+      // digitalWrite(led4Pin, LOW);
       relay4State = false;
       storeLogEntry("Relay 4 deactivated.");
       break;
-  }
-  if (!hasError) {
-    updateLEDs();
   }
   broadcastRelayStates();
 }
