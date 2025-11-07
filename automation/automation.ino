@@ -117,8 +117,8 @@ unsigned long lastNTPSync = 0;
 unsigned long lastScheduleCheck = 0;
 unsigned long lastSecond = 0;
 bool validTimeSync = false;
-unsigned long last90MinCheck = 0;
-const unsigned long CHECK_90MIN_INTERVAL = 5400;
+unsigned long lastMinCheck = 0;
+const unsigned long CHECK_MIN_INTERVAL = 1800;
 bool hasError = false;
 bool ledBlinkState = false;
 bool hasLaunchedSchedules = false;
@@ -4862,11 +4862,11 @@ void mainLoop(void* parameter) {
         if (getLocalTime(&timeinfo)) {
           unsigned long currentSeconds = timeinfo.tm_hour * 3600 + timeinfo.tm_min * 60 + timeinfo.tm_sec;
 
-          // 90 minute check
-          if (currentSeconds - last90MinCheck >= CHECK_90MIN_INTERVAL || (last90MinCheck > currentSeconds && currentSeconds >= 0)) {
+          // Minute check
+          if (currentSeconds - lastMinCheck >= CHECK_MIN_INTERVAL || (lastMinCheck > currentSeconds && currentSeconds >= 0)) {
             String timeStr = String(timeinfo.tm_hour) + ":" + (timeinfo.tm_min < 10 ? "0" : "") + String(timeinfo.tm_min);
             storeLogEntry("Device is powered on at " + timeStr);
-            last90MinCheck = currentSeconds;
+            lastMinCheck = currentSeconds;
           }
 
           static int prevDay = -1;
@@ -4875,7 +4875,7 @@ void mainLoop(void* parameter) {
           } else if (timeinfo.tm_mday != prevDay) {
             storeLogEntry("Day changed to: " + String(timeinfo.tm_mday));
             prevDay = timeinfo.tm_mday;
-            last90MinCheck = 0;
+            lastMinCheck = 0;
           }
         }
       }
