@@ -44,6 +44,10 @@ void handleDeleteTemporarySchedule();
 void checkTemporarySchedules();
 void handleTempSchedulesPage();
 void handleSchedulesPage();
+void saveTemporarySchedulesToEEPROM();
+void loadTemporarySchedulesFromEEPROM();
+void checkExpiredTemporarySchedulesOnStartup();
+bool hasTemporaryScheduleConflict(int relayNumber, int hours, int minutes);
 // void blinkAllLEDs();
 
 struct Schedule {
@@ -75,13 +79,10 @@ struct TemporarySchedule {
   bool enabled;
 };
 
-// Relay outputs - Using safe GPIO pins
 const int relay1 = 13;
 const int relay2 = 12;
 const int relay3 = 14;
 const int relay4 = 27;
-
-// Push button inputs - Using pins with internal pull-up
 const int switch1Pin = 26;
 const int switch2Pin = 25;
 const int switch3Pin = 33;
@@ -131,15 +132,18 @@ const int SCHEDULE_SIZE = sizeof(Schedule);
 const int MAX_SCHEDULES = 10;
 const int SCHEDULE_START_ADDR = 0;
 
+const int TEMP_SCHEDULE_SIZE = sizeof(TemporarySchedule);
+const int MAX_TEMP_SCHEDULES = 8;
+const int TEMP_SCHEDULE_START_ADDR = SCHEDULE_START_ADDR + 1 + (MAX_SCHEDULES * SCHEDULE_SIZE);
+const int TEMP_SCHEDULE_ID_COUNTER_ADDR = TEMP_SCHEDULE_START_ADDR + 1 + (MAX_TEMP_SCHEDULES * TEMP_SCHEDULE_SIZE);
+
 const int TOGGLE_DELAY = 500;
 const int TOGGLE_COUNT = 3;
 const std::vector<String> allowedIPs = {
   "192.168.29.3",  //A Mac
   "192.168.29.4",  //A Ipad
   "192.168.29.5",  //A Moto
-  "192.168.29.6",  //Acer
-  "192.168.29.9",  //F Moto
-  "192.168.29.10"  //N Vivo
+  "192.168.29.6"
 };
 unsigned long lastSwitch1Debounce = 0;
 unsigned long lastSwitch2Debounce = 0;
@@ -2394,12 +2398,15 @@ void setup() {
   server.begin();
   EEPROM.begin(EEPROM_SIZE);
   loadSchedulesFromEEPROM();
+  loadTemporarySchedulesFromEEPROM();
 
   webSocket.begin();
   webSocket.onEvent(webSocketEvent);
 
   resetWatchdog();
   watchdogTicker.attach(1, checkWatchdog);
+
+  checkExpiredTemporarySchedulesOnStartup();
 
   xTaskCreatePinnedToCore(
     secondaryLoop,
@@ -2478,6 +2485,144 @@ void loadSchedulesFromEEPROM() {
     schedules.push_back(schedule);
     addr += SCHEDULE_SIZE;
   }
+}
+
+void saveTemporarySchedulesToEEPROM() {
+  int addr = TEMP_SCHEDULE_START_ADDR;
+  EEPROM.write(addr, temporarySchedules.size());
+  addr++;
+
+  for (const TemporarySchedule& schedule : temporarySchedules) {
+    EEPROM.put(addr, schedule);
+    addr += TEMP_SCHEDULE_SIZE;
+  }
+  
+  EEPROM.put(TEMP_SCHEDULE_ID_COUNTER_ADDR, tempScheduleIdCounter);
+  
+  EEPROM.commit();
+}
+
+void loadTemporarySchedulesFromEEPROM() {
+  temporarySchedules.clear();
+  int addr = TEMP_SCHEDULE_START_ADDR;
+  int count = EEPROM.read(addr);
+  addr++;
+
+  for (int i = 0; i < count && i < MAX_TEMP_SCHEDULES; i++) {
+    TemporarySchedule schedule;
+    EEPROM.get(addr, schedule);
+    temporarySchedules.push_back(schedule);
+    addr += TEMP_SCHEDULE_SIZE;
+  }
+  
+  EEPROM.get(TEMP_SCHEDULE_ID_COUNTER_ADDR, tempScheduleIdCounter);
+  
+  if (tempScheduleIdCounter < 0 || tempScheduleIdCounter > 10000) {
+    tempScheduleIdCounter = 0;
+  }
+}
+
+void checkExpiredTemporarySchedulesOnStartup() {
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) {
+    return;
+  }
+
+  int hours = timeinfo.tm_hour;
+  int minutes = timeinfo.tm_min;
+  unsigned long currentTime = hours * 60 + minutes;
+
+  for (auto it = temporarySchedules.begin(); it != temporarySchedules.end();) {
+    const TemporarySchedule& schedule = *it;
+    bool shouldRemove = false;
+    bool shouldExecute = false;
+
+    if (!schedule.enabled) {
+      ++it;
+      continue;
+    }
+
+    if (schedule.hasOnTime && schedule.hasOffTime) {
+      unsigned long onTime = schedule.onHour * 60 + schedule.onMinute;
+      unsigned long offTime = schedule.offHour * 60 + schedule.offMinute;
+      
+      if (currentTime >= onTime && currentTime < offTime) {
+        shouldExecute = true;
+      } else if (currentTime >= offTime) {
+        shouldRemove = true;
+      }
+    } else if (schedule.hasOnTime && !schedule.hasOffTime) {
+      unsigned long onTime = schedule.onHour * 60 + schedule.onMinute;
+      if (currentTime >= onTime) {
+        shouldExecute = true;
+        shouldRemove = true;
+      }
+    } else if (!schedule.hasOnTime && schedule.hasOffTime) {
+      unsigned long offTime = schedule.offHour * 60 + schedule.offMinute;
+      if (currentTime >= offTime) {
+        shouldRemove = true;
+      }
+    }
+
+    if (shouldExecute) {
+      if (schedule.relayNumber == 1 && !relay1State) {
+        activateRelay(1, false);
+        storeLogEntry("Startup: Temporary schedule activated relay 1");
+      } else if (schedule.relayNumber == 2 && !relay2State) {
+        activateRelay(2, false);
+        storeLogEntry("Startup: Temporary schedule activated relay 2");
+      } else if (schedule.relayNumber == 3 && !relay3State) {
+        activateRelay(3, false);
+        storeLogEntry("Startup: Temporary schedule activated relay 3");
+      } else if (schedule.relayNumber == 4 && !relay4State) {
+        activateRelay(4, false);
+        storeLogEntry("Startup: Temporary schedule activated relay 4");
+      }
+    }
+
+    if (shouldRemove) {
+      storeLogEntry("Startup: Expired temporary schedule ID " + String(schedule.id) + " removed");
+      it = temporarySchedules.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  
+  if (temporarySchedules.size() > 0) {
+    saveTemporarySchedulesToEEPROM();
+  }
+}
+
+bool hasTemporaryScheduleConflict(int relayNumber, int hours, int minutes) {
+  for (const TemporarySchedule& schedule : temporarySchedules) {
+    if (!schedule.enabled || schedule.relayNumber != relayNumber) {
+      continue;
+    }
+
+    if (schedule.hasOnTime && schedule.onHour == hours && schedule.onMinute == minutes) {
+      return true;
+    }
+    if (schedule.hasOffTime && schedule.offHour == hours && schedule.offMinute == minutes) {
+      return true;
+    }
+    
+    if (schedule.hasOnTime && schedule.hasOffTime) {
+      unsigned long currentTime = hours * 60 + minutes;
+      unsigned long onTime = schedule.onHour * 60 + schedule.onMinute;
+      unsigned long offTime = schedule.offHour * 60 + schedule.offMinute;
+      
+      if (onTime <= offTime) {
+        if (currentTime >= onTime && currentTime < offTime) {
+          return true;
+        }
+      } else {
+        if (currentTime >= onTime || currentTime < offTime) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
 }
 
 void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length) {
@@ -4909,6 +5054,10 @@ void checkSchedules() {
   for (const Schedule& schedule : schedules) {
     if (!schedule.enabled || !schedule.daysOfWeek[weekdayIndex]) continue;
 
+    if (hasTemporaryScheduleConflict(schedule.relayNumber, hours, minutes)) {
+      continue;
+    }
+
     if (hours == schedule.onHour && minutes == schedule.onMinute && seconds == 0) {
       if (schedule.relayNumber == 1) {
         if (!relay1State) {
@@ -4965,8 +5114,46 @@ void checkScheduleslaunch() {
   bool relay3ShouldBeOn = false;
   bool relay4ShouldBeOn = false;
 
+  for (const TemporarySchedule& schedule : temporarySchedules) {
+    if (!schedule.enabled) {
+      continue;
+    }
+
+    bool shouldBeOn = false;
+    
+    if (schedule.hasOnTime && schedule.hasOffTime) {
+      unsigned long onMinutes = schedule.onHour * 60 + schedule.onMinute;
+      unsigned long offMinutes = schedule.offHour * 60 + schedule.offMinute;
+      
+      if (offMinutes > onMinutes) {
+        shouldBeOn = (currentTime >= onMinutes && currentTime < offMinutes);
+      } else {
+        shouldBeOn = (currentTime >= onMinutes || currentTime < offMinutes);
+      }
+    } else if (schedule.hasOnTime && !schedule.hasOffTime) {
+      unsigned long onMinutes = schedule.onHour * 60 + schedule.onMinute;
+      shouldBeOn = (currentTime >= onMinutes);
+    }
+
+    if (shouldBeOn) {
+      if (schedule.relayNumber == 1) {
+        relay1ShouldBeOn = true;
+      } else if (schedule.relayNumber == 2) {
+        relay2ShouldBeOn = true;
+      } else if (schedule.relayNumber == 3) {
+        relay3ShouldBeOn = true;
+      } else if (schedule.relayNumber == 4) {
+        relay4ShouldBeOn = true;
+      }
+    }
+  }
+
   for (const Schedule& schedule : schedules) {
     if (!schedule.enabled || !schedule.daysOfWeek[weekdayIndex]) {
+      continue;
+    }
+
+    if (hasTemporaryScheduleConflict(schedule.relayNumber, hours, minutes)) {
       continue;
     }
 
@@ -4980,13 +5167,13 @@ void checkScheduleslaunch() {
       shouldBeOn = (currentTime >= onMinutes || currentTime < offMinutes);
     }
 
-    if (schedule.relayNumber == 1) {
+    if (schedule.relayNumber == 1 && !relay1ShouldBeOn) {
       relay1ShouldBeOn |= shouldBeOn;
-    } else if (schedule.relayNumber == 2) {
+    } else if (schedule.relayNumber == 2 && !relay2ShouldBeOn) {
       relay2ShouldBeOn |= shouldBeOn;
-    } else if (schedule.relayNumber == 3) {
+    } else if (schedule.relayNumber == 3 && !relay3ShouldBeOn) {
       relay3ShouldBeOn |= shouldBeOn;
-    } else if (schedule.relayNumber == 4) {
+    } else if (schedule.relayNumber == 4 && !relay4ShouldBeOn) {
       relay4ShouldBeOn |= shouldBeOn;
     }
   }
@@ -5497,6 +5684,7 @@ void handleAddTemporarySchedule() {
       }
 
       temporarySchedules.push_back(newSchedule);
+      saveTemporarySchedulesToEEPROM();
       server.send(200, "application/json", "{\"status\":\"success\",\"id\":" + String(newSchedule.id) + "}");
 
       String logMsg = "Temporary schedule added for relay " + String(newSchedule.relayNumber);
@@ -5523,6 +5711,7 @@ void handleDeleteTemporarySchedule() {
     for (auto it = temporarySchedules.begin(); it != temporarySchedules.end(); ++it) {
       if (it->id == id) {
         temporarySchedules.erase(it);
+        saveTemporarySchedulesToEEPROM();
         storeLogEntry("Temporary schedule deleted successfully");
         server.send(200, "application/json", "{\"status\":\"success\"}");
         clearError();
@@ -5544,6 +5733,7 @@ void checkTemporarySchedules() {
   int hours = timeinfo.tm_hour;
   int minutes = timeinfo.tm_min;
   int seconds = timeinfo.tm_sec;
+  bool schedulesChanged = false;
 
   for (auto it = temporarySchedules.begin(); it != temporarySchedules.end();) {
     const TemporarySchedule& schedule = *it;
@@ -5622,8 +5812,13 @@ void checkTemporarySchedules() {
     if (shouldRemove) {
       storeLogEntry("Temporary schedule ID " + String(schedule.id) + " completed and removed");
       it = temporarySchedules.erase(it);
+      schedulesChanged = true;
     } else {
       ++it;
     }
+  }
+  
+  if (schedulesChanged) {
+    saveTemporarySchedulesToEEPROM();
   }
 }
